@@ -1905,19 +1905,18 @@ requestAnimationFrame(loop);
 let _gsBeforeHide = null;
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    // Arka plana gitti — müziği durdur, oyun aktifse duraklat
-    if (audCtx) audCtx.suspend();
+    // Arka plana gitti — tüm sesleri ve müziği tamamen durdur
+    bgmStop();
     humStop();
+    try { if (audCtx) audCtx.suspend(); } catch(e) {}
     if (gs === 'PLAY') {
-      _gsBeforeHide = 'PLAY';
       gs = 'PAUSE';
       movingNow = false; ptouching = false;
-    } else {
-      _gsBeforeHide = null;
     }
   } else {
-    // Ön plana döndü — müziği devam ettir
-    if (audCtx) audCtx.resume();
+    // Ön plana döndü — ses motorunu aç, müziği yeniden başlat
+    try { if (audCtx) audCtx.resume(); } catch(e) {}
+    bgmStart();
   }
 });
 
