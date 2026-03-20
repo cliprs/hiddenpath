@@ -1374,7 +1374,7 @@ function drawPlayer() {
   const isInv = invT>0;
   const col = isInv ? `hsl(${Date.now()*.2%360},100%,70%)` : '#00e5ff';
   // Parmak küreyi kapatmasın — biraz yukarı offset
-  const oy = py - W*.07;
+  const oy = py - W*.18;
   // Parmaktan küreye bağlantı çizgisi (ince)
   ctx.save();
   ctx.strokeStyle = 'rgba(255,255,255,0.15)';
