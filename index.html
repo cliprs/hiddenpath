@@ -649,7 +649,7 @@ class Mine {
         break;
       case 'track':
         if (moving) {
-          const dx=px-this.x, dy=py-this.y, dist=Math.sqrt(dx*dx+dy*dy);
+          const dx=px-this.x, dy=(py-SPHERE_OFFSET())-this.y, dist=Math.sqrt(dx*dx+dy*dy);
           if (dist < W*.30 && (!lanR || dist<lanR) && dist>1) {
             const step = Math.min(W*.0004, dist*.25);
             this.x+=(dx/dist)*step; this.y+=(dy/dist)*step;
@@ -810,6 +810,8 @@ class Mine {
 let gs   = 'MENU';
 let lvl  = sv.lvl||1, lives=4, ck=sv.ck||1, pb=sv.pb||0;
 let px=0, py=0, ptouching=false, spd=0;
+// Kürenin parmaktan yukarı ofseti — çarpışma + görsel hep bu değeri kullanır
+const SPHERE_OFFSET = () => W * 0.18;
 let movingNow=false, startZoneTouch=false;
 let minesVis=true, memT=0, memDur=3;
 let invT=0, pauseT=0, warnFlash=0;
@@ -1016,16 +1018,17 @@ function update(dt) {
       else {pauseT=0;warnFlash=0;}
     }
 
-    // Collision
+    // Collision — kürenin gerçek konumuna göre hesapla
+    const soy = py - SPHERE_OFFSET();
     if (movingNow && invT<=0) {
       for (const m of mines) {
-        const dx=px-m.x,dy=py-m.y,d=Math.sqrt(dx*dx+dy*dy);
+        const dx=px-m.x, dy=soy-m.y, d=Math.sqrt(dx*dx+dy*dy);
         if (d < m.hitR()+W*.022*.8) { PS.explode(m.x,m.y); loseLife('mine'); break; }
       }
     }
 
-    // Win
-    if (movingNow&&py<=H*.13) levelComplete();
+    // Win — küre bitiş çizgisine ulaştığında
+    if (movingNow && soy<=H*.13) levelComplete();
     return;
   }
 
@@ -1361,11 +1364,12 @@ function drawLantern() {
   const tc=tmp.getContext('2d');
   tc.fillStyle='rgba(0,0,15,0.94)'; tc.fillRect(0,0,W,H);
   tc.globalCompositeOperation='destination-out';
-  const g=tc.createRadialGradient(px,py,landR*.2,px,py,landR);
+  const lx=px, ly=py-SPHERE_OFFSET();
+  const g=tc.createRadialGradient(lx,ly,landR*.2,lx,ly,landR);
   g.addColorStop(0,'rgba(0,0,0,1)');
   g.addColorStop(.6,'rgba(0,0,0,0.85)');
   g.addColorStop(1,'rgba(0,0,0,0)');
-  tc.fillStyle=g; tc.beginPath(); tc.arc(px,py,landR,0,Math.PI*2); tc.fill();
+  tc.fillStyle=g; tc.beginPath(); tc.arc(lx,ly,landR,0,Math.PI*2); tc.fill();
   ctx.drawImage(tmp,0,0);
 }
 
@@ -1374,7 +1378,7 @@ function drawPlayer() {
   const isInv = invT>0;
   const col = isInv ? `hsl(${Date.now()*.2%360},100%,70%)` : '#00e5ff';
   // Parmak küreyi kapatmasın — biraz yukarı offset
-  const oy = py - W*.18;
+  const oy = py - SPHERE_OFFSET();
   // Parmaktan küreye bağlantı çizgisi (ince)
   ctx.save();
   ctx.strokeStyle = 'rgba(255,255,255,0.15)';
