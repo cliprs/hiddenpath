@@ -1,0 +1,1885 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Hidden Path</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { background:#000008; height:100%; overflow:hidden;
+            user-select:none; -webkit-user-select:none; }
+#c { position:absolute; top:50%; left:50%;
+     transform:translate(-50%,-50%); touch-action:none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════
+//  SETUP
+// ═══════════════════════════════════════════════════════
+const cvs = document.getElementById('c');
+const ctx  = cvs.getContext('2d');
+let W = 0, H = 0;
+
+function resize() {
+  const asp = 9/16;
+  if (window.innerWidth / window.innerHeight < asp) { W = window.innerWidth;  H = W / asp; }
+  else                                               { H = window.innerHeight; W = H * asp; }
+  cvs.width = W; cvs.height = H;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ═══════════════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════════════
+const lerp  = (a, b, t) => a + (b - a) * t;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd   = (a, b)  => a + Math.random() * (b - a);
+const rndI  = (a, b)  => Math.floor(rnd(a, b));
+
+function mkRng(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ s >>> 15, 1 | s);
+    t = (t + Math.imul(t ^ t >>> 7, 61 | t)) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+// ═══════════════════════════════════════════════════════
+//  AUDIO  (procedural — dosya gerektirmez)
+// ═══════════════════════════════════════════════════════
+let audCtx = null;
+function getAud() {
+  if (!audCtx) audCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audCtx.state === 'suspended') audCtx.resume();
+  return audCtx;
+}
+
+// Genel amaçlı kompresör — tüm sesler buradan geçer
+let _master = null;
+function getMaster() {
+  const a = getAud();
+  if (!_master) {
+    _master = a.createDynamicsCompressor();
+    _master.threshold.value = -12;
+    _master.ratio.value = 4;
+    _master.connect(a.destination);
+  }
+  return _master;
+}
+
+// Osillatör notası: frekans, dalga tipi, süre, ses, gecikme, frekans sweep
+function note(freq, type, dur, vol, delay=0, freqEnd=null) {
+  try {
+    const a = getAud(), t = a.currentTime + delay;
+    const o = a.createOscillator(), g = a.createGain();
+    o.connect(g); g.connect(getMaster());
+    o.type = type; o.frequency.setValueAtTime(freq, t);
+    if (freqEnd !== null) o.frequency.linearRampToValueAtTime(freqEnd, t + dur);
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.012);
+    g.gain.setValueAtTime(vol, t + dur * 0.6);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.start(t); o.stop(t + dur + 0.05);
+  } catch(e) {}
+}
+
+// Gürültü patlaması: beyaz gürültü + alçak geçirgen filtre = patlama/vuruş sesi
+function noise(dur, vol, cutoff=400, delay=0, type='lowpass') {
+  try {
+    const a = getAud(), t = a.currentTime + delay;
+    const bufLen = Math.ceil(a.sampleRate * (dur + 0.1));
+    const buf = a.createBuffer(1, bufLen, a.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i=0; i<bufLen; i++) data[i] = Math.random()*2 - 1;
+    const src = a.createBufferSource();
+    src.buffer = buf;
+    const flt = a.createBiquadFilter();
+    flt.type = type; flt.frequency.setValueAtTime(cutoff, t);
+    const g = a.createGain();
+    src.connect(flt); flt.connect(g); g.connect(getMaster());
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.start(t); src.stop(t + dur + 0.1);
+  } catch(e) {}
+}
+
+const SFX = {
+  // Hafıza fazı başlangıcı — mistik arpej
+  mem: () => {
+    [523, 659, 784, 1047].forEach((f, i) =>
+      note(f, 'sine', 0.5, 0.22, i * 0.07)
+    );
+    noise(0.18, 0.04, 3000, 0, 'highpass');
+  },
+
+  // Mayına çarpma — derin patlama
+  explode: () => {
+    // Alt-bas gümbürtü
+    note(55,  'sine',     0.6, 0.9, 0,    30);
+    note(80,  'sawtooth', 0.3, 0.5, 0.02, 40);
+    // Gürültü patlaması (ana boom)
+    noise(0.55, 0.85, 180, 0);
+    // Orta kırınım çatırtısı
+    noise(0.3, 0.4, 1200, 0.04, 'bandpass');
+    // Yüksek tiz çatlama
+    noise(0.12, 0.25, 4500, 0.02, 'highpass');
+  },
+
+  // Parmak kalktı — sert kesik vuruş
+  up: () => {
+    noise(0.18, 0.45, 280, 0);
+    note(160, 'sawtooth', 0.2, 0.35, 0, 80);
+  },
+
+  // Can bitti / elendi — dramatik iniş
+  lose: () => {
+    [370, 277, 220, 185].forEach((f, i) =>
+      note(f, 'sawtooth', 0.28, 0.38, i * 0.13, f * 0.88)
+    );
+    noise(0.4, 0.3, 220, 0.05);
+  },
+
+  // Bölüm tamamlama — zafer fanfarı
+  clear: () => {
+    // Artan arpej
+    const mel = [523, 659, 784, 880, 1047];
+    mel.forEach((f, i) => {
+      note(f,   'square', 0.22, 0.28, i * 0.08);
+      note(f/2, 'sine',   0.25, 0.18, i * 0.08);  // oktav altı derinlik
+    });
+    // Son akord vurgusu
+    [523, 659, 784].forEach(f => note(f, 'sine', 0.6, 0.22, 0.45));
+    // Tiz parıltı
+    noise(0.1, 0.12, 6000, 0.44, 'highpass');
+  },
+
+  // Mükemmel tamamlama — daha görkemli fanfar
+  perfect: () => {
+    const mel = [523, 659, 784, 880, 1047, 1319, 1568];
+    mel.forEach((f, i) => {
+      note(f,   'square', 0.28, 0.32, i * 0.07);
+      note(f/2, 'sine',   0.28, 0.20, i * 0.07);
+      note(f*2, 'sine',   0.14, 0.10, i * 0.07);  // overtone
+    });
+    // Büyük son akord
+    [523, 659, 784, 1047].forEach(f => note(f, 'sine', 0.8, 0.28, 0.55));
+    noise(0.15, 0.18, 8000, 0.54, 'highpass');
+  },
+
+  // 0.3s duraksamak uyarısı — sivri tik
+  tick: () => {
+    note(1600, 'square', 0.06, 0.7);
+    noise(0.05, 0.3, 3000, 0, 'highpass');
+  },
+
+  // UI tıklama
+  click: () => {
+    note(880, 'sine', 0.07, 0.25);
+    noise(0.04, 0.15, 2000, 0, 'highpass');
+  },
+};
+
+// ── Kalem sesi (parmak sürükleme) ────────────────────────────
+let _pencil = null;
+function humStart() {   // isim aynı kalsın — çağıran kod değişmesin
+  try {
+    if (_pencil) return;
+    const a = getAud();
+    const sr = a.sampleRate;
+    // 80ms döngüsel gürültü tamponu
+    const len = Math.ceil(sr * 0.08);
+    const buf = a.createBuffer(1, len, sr);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      // Biraz yumuşatılmış gürültü (3 örnek ortalaması)
+      d[i] = (Math.random() + Math.random() + Math.random()) / 3 * 2 - 1;
+    }
+    const src = a.createBufferSource();
+    src.buffer = buf; src.loop = true;
+
+    // Alçak frekansları kes — kağıt sürtünme aralığı
+    const hpf = a.createBiquadFilter();
+    hpf.type = 'highpass'; hpf.frequency.value = 1800;
+
+    // Kalem cızırtı frekansı etrafında bant
+    const bpf = a.createBiquadFilter();
+    bpf.type = 'bandpass'; bpf.frequency.value = 4200; bpf.Q.value = 0.9;
+
+    // Hafif tüy dokusu için ikinci bant
+    const bpf2 = a.createBiquadFilter();
+    bpf2.type = 'bandpass'; bpf2.frequency.value = 2200; bpf2.Q.value = 1.4;
+
+    const gMain = a.createGain(); gMain.gain.value = 0;
+    const gSoft = a.createGain(); gSoft.gain.value = 0;
+    const mix   = a.createGain(); mix.gain.value = 1;
+
+    src.connect(hpf);
+    hpf.connect(bpf);  bpf.connect(gMain);  gMain.connect(mix);
+    hpf.connect(bpf2); bpf2.connect(gSoft); gSoft.connect(mix);
+    mix.connect(getMaster());
+
+    src.start();
+    gMain.gain.setTargetAtTime(0.20, a.currentTime, 0.07);
+    gSoft.gain.setTargetAtTime(0.10, a.currentTime, 0.07);
+
+    _pencil = { src, gMain, gSoft, bpf };
+  } catch(e) {}
+}
+function humUpdate(speed) {
+  if (!_pencil) return;
+  try {
+    const a = getAud();
+    // Hıza göre ses kısıl/aç (çok yavaşta neredeyse sessiz)
+    const t  = Math.min(speed / 700, 1);
+    const v1 = 0.06 + t * 0.22;
+    const v2 = 0.04 + t * 0.10;
+    const fc = 3500 + t * 2000;
+    _pencil.gMain.gain.setTargetAtTime(v1, a.currentTime, 0.04);
+    _pencil.gSoft.gain.setTargetAtTime(v2, a.currentTime, 0.04);
+    _pencil.bpf.frequency.setTargetAtTime(fc, a.currentTime, 0.06);
+  } catch(e) {}
+}
+function humStop() {
+  try {
+    if (!_pencil) return;
+    const a = getAud();
+    _pencil.gMain.gain.setTargetAtTime(0, a.currentTime, 0.06);
+    _pencil.gSoft.gain.setTargetAtTime(0, a.currentTime, 0.06);
+    const p = _pencil; _pencil = null;
+    setTimeout(() => { try { p.src.stop(); } catch(e) {} }, 350);
+  } catch(e) {}
+}
+
+// ── Arka plan müziği ──────────────────────────────────────────
+// Am pentatonik dizi (4 oktav): A1→A4
+const _BGM_SCALE = [55,110,131,147,165,196,220,262,294,330,392,440];
+// 4 farklı melodi deseni (8 vuruş, null=sessizlik, sayı=_BGM_SCALE indeksi)
+const _BGM_PATS = [
+  [2,null,5,null,7,null,4,null],
+  [null,6,null,4,null,8,null,5],
+  [3,null,null,6,8,null,5,null],
+  [null,4,7,null,null,5,null,3],
+];
+let _bgm = { on:false, bar:0, timer:null, drone:null, droneG:null };
+
+function bgmStart() {
+  if (_bgm.on) return;
+  _bgm.on = true; _bgm.bar = 0;
+  // Sürekli bass drone (A1 — 55Hz)
+  try {
+    const a = getAud();
+    const o = a.createOscillator(), g = a.createGain();
+    const f = a.createBiquadFilter();
+    o.type = 'sine'; o.frequency.value = 55;
+    f.type = 'lowpass'; f.frequency.value = 160;
+    o.connect(f); f.connect(g); g.connect(getMaster());
+    g.gain.value = 0;
+    o.start();
+    g.gain.setTargetAtTime(0.10, a.currentTime, 1.2);
+    _bgm.drone = o; _bgm.droneG = g;
+  } catch(e) {}
+  _bgmTick();
+}
+
+function _bgmTick() {
+  if (!_bgm.on) return;
+  const barSec = 3.6;        // 75 BPM, 4 vuruş
+  const beatSec = barSec / 8; // 8th note grid
+  try {
+    const a = getAud(), now = a.currentTime;
+    const pat = _BGM_PATS[_bgm.bar % _BGM_PATS.length];
+
+    pat.forEach((idx, i) => {
+      if (idx === null) return;
+      const f  = _BGM_SCALE[idx];
+      const t  = now + i * beatSec;
+      const dur = beatSec * 2.8;
+
+      // Ana melodi sesi
+      const o = a.createOscillator(), g = a.createGain();
+      const flt = a.createBiquadFilter();
+      o.type = 'sine'; o.frequency.value = f;
+      flt.type = 'lowpass'; flt.frequency.value = 900;
+      o.connect(flt); flt.connect(g); g.connect(getMaster());
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.055, t + 0.04);
+      g.gain.setValueAtTime(0.055, t + dur * 0.55);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.start(t); o.stop(t + dur + 0.05);
+
+      // Oktav üstü fısıltı (çok sessiz)
+      const o2 = a.createOscillator(), g2 = a.createGain();
+      o2.type = 'sine'; o2.frequency.value = f * 2;
+      o2.connect(g2); g2.connect(getMaster());
+      g2.gain.setValueAtTime(0.001, t);
+      g2.gain.linearRampToValueAtTime(0.018, t + 0.05);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.7);
+      o2.start(t); o2.stop(t + dur);
+    });
+
+    // Her 2 bar'da bir bas nabzı
+    if (_bgm.bar % 2 === 0) {
+      const o3 = a.createOscillator(), g3 = a.createGain();
+      o3.type = 'sine'; o3.frequency.value = 55;
+      o3.connect(g3); g3.connect(getMaster());
+      g3.gain.setValueAtTime(0.001, now);
+      g3.gain.linearRampToValueAtTime(0.09, now + 0.06);
+      g3.gain.exponentialRampToValueAtTime(0.001, now + barSec * 0.75);
+      o3.start(now); o3.stop(now + barSec);
+    }
+  } catch(e) {}
+
+  _bgm.bar++;
+  _bgm.timer = setTimeout(_bgmTick, (3.6 - 0.08) * 1000);
+}
+
+function bgmStop() {
+  _bgm.on = false;
+  if (_bgm.timer) { clearTimeout(_bgm.timer); _bgm.timer = null; }
+  try {
+    if (_bgm.droneG) {
+      const a = getAud();
+      _bgm.droneG.gain.setTargetAtTime(0, a.currentTime, 0.4);
+      const d = _bgm.drone;
+      setTimeout(() => { try { d.stop(); } catch(e) {} }, 1800);
+    }
+  } catch(e) {}
+  _bgm.drone = null; _bgm.droneG = null;
+}
+
+// ═══════════════════════════════════════════════════════
+//  SAVE
+// ═══════════════════════════════════════════════════════
+const SK = 'hp_v3';
+let sv = { lvl:1, ck:1, stars:{}, pb:0, legacy:false };
+try { Object.assign(sv, JSON.parse(localStorage.getItem(SK) || '{}')); } catch(e) {}
+function doSave() { try { localStorage.setItem(SK, JSON.stringify(sv)); } catch(e) {} }
+
+// ═══════════════════════════════════════════════════════
+//  LEVEL GENERATION
+// ═══════════════════════════════════════════════════════
+const PHASES = [
+  { name:'Zihnin Labirenti',   tip:'Mayınları ezberle, parmağını kaldırma!' },
+  { name:'Hareketin Ritmi',    tip:'Mayınlar hareket ediyor!' },
+  { name:'Hiçliğin Ortasında', tip:'Ekran karardı. Dur­ma — ışık söner!' },
+  { name:'Gölge Takibi',       tip:'Karanlık + hareketli mayınlar.' },
+  { name:'Büyük Sınav',        tip:'DURAKLAMA YOK! 0.5s durasan elenisin.' },
+];
+
+const PHASE_COL = ['#4fc3f7','#66bb6a','#ab47bc','#ff7043','#ef5350'];
+function phCol(ph) { return PHASE_COL[clamp(ph-1,0,4)]; }
+
+function mkMineData(bx, by, ph, r) {
+  bx = clamp(bx, 0.05, 0.95); by = clamp(by, 0.16, 0.79);
+  let type = 'static', p = {};
+  if (ph >= 2) {
+    const roll = r();
+    if      (ph === 2) { if (roll<.25) type='hori'; else if (roll<.45) type='vert'; else if (roll<.55) type='circ'; else if (roll<.62) type='stac'; }
+    else if (ph === 3) { if (roll<.15) type='hori'; }
+    else if (ph === 4) { if (roll<.28) type='hori'; else if (roll<.48) type='vert'; else if (roll<.58) type='circ'; else if (roll<.65) type='stac'; }
+    else if (ph === 5) { if (roll<.18) type='hori'; else if (roll<.33) type='vert'; else if (roll<.41) type='circ'; else if (roll<.47) type='stac'; else if (roll<.60) type='track'; }
+  }
+  if (type==='hori')  p = { range:0.05+r()*0.05, spd:0.25+r()*0.25, t:r()*Math.PI*2 };
+  if (type==='vert')  p = { range:0.03+r()*0.04, spd:0.25+r()*0.25, t:r()*Math.PI*2 };
+  if (type==='circ')  p = { rad:0.03+r()*0.03, spd:0.25+r()*0.25, t:r()*Math.PI*2 };
+  if (type==='stac')  p = { range:0.04+r()*0.04, spd:0.35+r()*0.25, t:r()*Math.PI*2, pt:0, paused:false };
+  if (type==='track') p = { spd:1 };
+  return { bx, by, type, p };
+}
+
+function genLevel(n) {
+  const ph = Math.ceil(n / 5), r = mkRng(n*7919+31337);
+  const rows = 3 + Math.floor((n-1)*0.6);
+  const gapW = Math.max(0.16, 0.36 - n*0.007);
+  const mines = [];
+  const yt = 0.16, yb = 0.80, yh = yb - yt;
+  for (let row = 0; row < rows; row++) {
+    const ry = yt + (row+0.5)*yh/rows;
+    const gc = 0.14 + r()*0.72, gl = gc-gapW/2, gr = gc+gapW/2;
+    let x = 0.04 + r()*0.02;
+    while (x < gl-0.035) { mines.push(mkMineData(x, ry+(r()-.5)*.06, ph, r)); x += 0.085+r()*.07; }
+    x = gr + 0.03 + r()*0.02;
+    while (x < 0.97)     { mines.push(mkMineData(x, ry+(r()-.5)*.06, ph, r)); x += 0.085+r()*.07; }
+  }
+  return { mines, ph };
+}
+
+const LEVELS = Array.from({ length:25 }, (_, i) => genLevel(i+1));
+
+// ═══════════════════════════════════════════════════════
+//  PARTICLE SYSTEM
+// ═══════════════════════════════════════════════════════
+class Particle {
+  constructor(x, y, vx, vy, life, r, col, type) {
+    this.x=x; this.y=y; this.vx=vx; this.vy=vy;
+    this.life=life; this.maxLife=life;
+    this.r=r; this.col=col; this.type=type;
+    this.rot=rnd(0, Math.PI*2); this.rotV=rnd(-6, 6);
+    this.grav = type==='ember' ? -120 : type==='fragment' ? 150 : 0;
+  }
+  get t() { return 1 - this.life/this.maxLife; }
+  update(dt) {
+    this.vy += this.grav * dt;
+    this.vx *= (1 - 2.5*dt); this.vy *= (1 - (this.grav?1.5:2.5)*dt);
+    this.x += this.vx*dt; this.y += this.vy*dt;
+    this.rot += this.rotV*dt; this.life -= dt;
+  }
+  draw() {
+    const alpha = Math.pow(clamp(1-this.t, 0, 1), 1.2);
+    if (alpha < 0.01) return;
+    ctx.save(); ctx.globalAlpha = alpha; ctx.translate(this.x, this.y);
+    if (this.type === 'fragment') {
+      ctx.rotate(this.rot);
+      const sz = this.r * (1 - this.t*0.5);
+      ctx.fillStyle = this.col;
+      ctx.shadowBlur = sz*3; ctx.shadowColor = this.col;
+      ctx.fillRect(-sz, -sz*0.4, sz*2, sz*0.8);
+    } else if (this.type === 'ember') {
+      const sz = this.r * (1 - this.t*0.6);
+      ctx.fillStyle = this.col;
+      ctx.shadowBlur = sz*4; ctx.shadowColor = '#ffaa00';
+      ctx.beginPath(); ctx.arc(0,0,sz,0,Math.PI*2); ctx.fill();
+    } else if (this.type === 'smoke') {
+      const sz = this.r * (1 + this.t*0.8);
+      const g = ctx.createRadialGradient(0,0,0,0,0,sz);
+      g.addColorStop(0, `rgba(80,50,50,${0.25*alpha})`);
+      g.addColorStop(1, 'rgba(40,20,20,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(0,0,sz,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+class Shockwave {
+  constructor(x, y) { this.x=x; this.y=y; this.r=0; this.life=0.5; }
+  update(dt) { this.r += W*0.4*dt; this.life -= dt; }
+  draw() {
+    const a = (this.life/0.5)*0.9;
+    if (a < 0.01) return;
+    ctx.save(); ctx.globalAlpha = a;
+    ctx.strokeStyle = '#ff6622';
+    ctx.lineWidth = W*0.007*(this.life/0.5);
+    ctx.shadowBlur = 20; ctx.shadowColor = '#ff4400';
+    ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+class FlashRing {
+  constructor(x, y) { this.x=x; this.y=y; this.r=W*0.02; this.life=0.25; }
+  update(dt) { this.r += W*0.9*dt; this.life -= dt; }
+  draw() {
+    const a = (this.life/0.25);
+    if (a < 0.01) return;
+    const g = ctx.createRadialGradient(this.x,this.y,this.r*0.3,this.x,this.y,this.r);
+    g.addColorStop(0, `rgba(255,200,100,${a*0.8})`);
+    g.addColorStop(1, 'rgba(255,50,0,0)');
+    ctx.save(); ctx.globalAlpha = 1;
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(this.x,this.y,this.r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+const PS = {
+  list: [], shocks: [], flashes: [],
+  explode(x, y) {
+    // Fragments
+    for (let i=0; i<14; i++) {
+      const a = (i/14)*Math.PI*2 + rnd(-.3,.3);
+      const spd = rnd(W*.25, W*.75);
+      const cols = ['#ff3311','#ff6622','#ff9900','#ffcc00','#ffffff','#ff2244'];
+      this.list.push(new Particle(x,y, Math.cos(a)*spd, Math.sin(a)*spd,
+        rnd(.4,.9), rnd(W*.005,W*.015), cols[rndI(0,cols.length)], 'fragment'));
+    }
+    // Embers
+    for (let i=0; i<22; i++) {
+      const a = rnd(0, Math.PI*2);
+      const spd = rnd(W*.04, W*.28);
+      this.list.push(new Particle(x,y, Math.cos(a)*spd, Math.sin(a)*spd-W*.08,
+        rnd(.7,1.4), rnd(W*.002,W*.007), '#ffaa00', 'ember'));
+    }
+    // Smoke
+    for (let i=0; i<6; i++) {
+      this.list.push(new Particle(x+rnd(-W*.025,W*.025), y+rnd(-W*.025,W*.025),
+        rnd(-W*.03,W*.03), rnd(-W*.06,0), rnd(.5,.9), rnd(W*.035,W*.07), '#884422', 'smoke'));
+    }
+    this.shocks.push(new Shockwave(x, y));
+    this.flashes.push(new FlashRing(x, y));
+    SFX.explode();
+  },
+  update(dt) {
+    this.list    = this.list.filter(p  => { p.update(dt);  return p.life  > 0; });
+    this.shocks  = this.shocks.filter(s => { s.update(dt); return s.life  > 0; });
+    this.flashes = this.flashes.filter(f=>{ f.update(dt);  return f.life  > 0; });
+    if (this.list.length > 350) this.list.splice(0, this.list.length-350);
+  },
+  draw() {
+    this.flashes.forEach(f => f.draw());
+    this.shocks.forEach(s  => s.draw());
+    this.list.forEach(p    => p.draw());
+  },
+  clear() { this.list=[]; this.shocks=[]; this.flashes=[]; }
+};
+
+// ═══════════════════════════════════════════════════════
+//  SCREEN SHAKE
+// ═══════════════════════════════════════════════════════
+const SHAKE = {
+  x:0, y:0, t:0, intensity:0,
+  trigger(i, d=0.3) { this.intensity=i; this.t=d; },
+  update(dt) {
+    if (this.t <= 0) { this.x=0; this.y=0; return; }
+    this.t -= dt;
+    const s = this.intensity * (this.t > 0 ? 1 : 0);
+    this.x = rnd(-s,s); this.y = rnd(-s,s);
+  }
+};
+
+// ═══════════════════════════════════════════════════════
+//  PLAYER TRAIL
+// ═══════════════════════════════════════════════════════
+const TRAIL = {
+  pts: [],
+  add(x, y) {
+    this.pts.push({ x, y, life:1.0 });
+    if (this.pts.length > 55) this.pts.shift();
+  },
+  update(dt) {
+    this.pts.forEach(p => p.life -= dt*2.8);
+    this.pts = this.pts.filter(p => p.life > 0);
+  },
+  draw() {
+    for (let i=1; i<this.pts.length; i++) {
+      const p = this.pts[i], q = this.pts[i-1];
+      const a = p.life * 0.5;
+      const w = W*0.009*p.life;
+      ctx.save();
+      ctx.globalAlpha = a;
+      const _ph = Math.ceil(lvl/5);
+      const _tc = phCol(_ph);
+      ctx.strokeStyle = _tc;
+      ctx.lineWidth = w; ctx.lineCap = 'round';
+      ctx.shadowBlur = w*2; ctx.shadowColor = _tc;
+      ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.restore();
+    }
+  },
+  clear() { this.pts = []; }
+};
+
+// ═══════════════════════════════════════════════════════
+//  BACKGROUND DUST PARTICLES
+// ═══════════════════════════════════════════════════════
+const DUST = {
+  pts: Array.from({length:40}, () => ({
+    x: Math.random()*800, y: Math.random()*1200,
+    r: 0, vy: 0, vx: 0, a: 0
+  })),
+  init() {
+    this.pts.forEach(p => this.reset(p));
+  },
+  reset(p) {
+    p.x  = Math.random() * W;
+    p.y  = Math.random() * H;
+    p.r  = W * (0.001 + Math.random()*0.003);
+    p.vy = -W * (0.004 + Math.random()*0.012);
+    p.vx = W * (Math.random()-.5)*0.006;
+    p.a  = 0.05 + Math.random()*0.2;
+  },
+  update(dt) {
+    this.pts.forEach(p => {
+      p.x += p.vx*dt; p.y += p.vy*dt;
+      if (p.y < -5) this.reset(p);
+    });
+  },
+  draw() {
+    this.pts.forEach(p => {
+      ctx.save(); ctx.globalAlpha = p.a;
+      ctx.fillStyle = '#00e5ff';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    });
+  }
+};
+DUST.init();
+
+// ═══════════════════════════════════════════════════════
+//  MINE CLASS
+// ═══════════════════════════════════════════════════════
+class Mine {
+  constructor(d) {
+    this.bx   = d.bx*W; this.by = d.by*H;
+    this.x    = this.bx; this.y  = this.by;
+    this.type = d.type;
+    this.p    = JSON.parse(JSON.stringify(d.p));
+    this.r    = W*0.036;
+    this.pulse = Math.random()*Math.PI*2;
+    this.rot   = Math.random()*Math.PI*2;
+  }
+
+  update(dt, px, py, moving, lanR) {
+    this.pulse += dt*2.8; this.rot += dt*(this.type==='track'?2.5:0.8);
+    const p = this.p;
+    switch (this.type) {
+      case 'hori':  p.t+=dt*p.spd; this.x=this.bx+Math.sin(p.t)*p.range*W; break;
+      case 'vert':  p.t+=dt*p.spd; this.y=this.by+Math.sin(p.t)*p.range*H; break;
+      case 'circ':  p.t+=dt*p.spd; this.x=this.bx+Math.cos(p.t)*p.rad*W; this.y=this.by+Math.sin(p.t)*p.rad*H; break;
+      case 'stac':
+        if (p.paused) { p.pt-=dt; if(p.pt<=0){p.paused=false;p.spd=Math.min(p.spd*1.6,3.5);} }
+        else {
+          const prev=p.t; p.t+=dt*p.spd; this.x=this.bx+Math.sin(p.t)*p.range*W;
+          if (Math.floor(p.t/Math.PI)!==Math.floor(prev/Math.PI)) { p.paused=true; p.pt=.2+Math.random()*.3; p.spd=Math.max(p.spd/1.6,.8); }
+        }
+        break;
+      case 'track':
+        if (moving) {
+          const dx=px-this.x, dy=py-this.y, dist=Math.sqrt(dx*dx+dy*dy);
+          if (dist < W*.30 && (!lanR || dist<lanR) && dist>1) {
+            const step = Math.min(W*.0004, dist*.25);
+            this.x+=(dx/dist)*step; this.y+=(dy/dist)*step;
+          }
+        }
+        break;
+    }
+  }
+
+  hitR() { return this.r * 0.85; }
+
+  draw(alpha) {
+    if (alpha <= 0.01) return;
+    const isTrack = this.type === 'track';
+    const cx = this.x, cy = this.y, r = this.r;
+    const bodyR = r * 0.72;
+
+    ctx.save(); ctx.globalAlpha = alpha;
+    ctx.translate(cx, cy); ctx.rotate(this.rot * 0.28);
+
+    // ── HORN'LAR (önce çiz — gövdenin altında kalsın) ─────────
+    const hornCount = isTrack ? 8 : 6;
+    const hornStemLen = r * 0.48;
+    const hornStemW   = r * 0.14;
+    const hornBallR   = r * 0.12;
+
+    for (let i = 0; i < hornCount; i++) {
+      const a = (i / hornCount) * Math.PI * 2;
+      const stemX = Math.cos(a);
+      const stemY = Math.sin(a);
+      const stemStart = bodyR * 0.88;
+      const stemEnd   = bodyR + hornStemLen;
+      const ballX = Math.cos(a) * (stemEnd + hornBallR * 0.6);
+      const ballY = Math.sin(a) * (stemEnd + hornBallR * 0.6);
+
+      // Stem — metalik silindir
+      ctx.save();
+      ctx.translate(stemX * stemStart, stemY * stemStart);
+      ctx.rotate(a + Math.PI/2);
+      const stemGrad = ctx.createLinearGradient(-hornStemW, 0, hornStemW, 0);
+      stemGrad.addColorStop(0,   isTrack ? '#4a1800' : '#222222');
+      stemGrad.addColorStop(0.4, isTrack ? '#c06030' : '#888888');
+      stemGrad.addColorStop(0.7, isTrack ? '#e08040' : '#aaaaaa');
+      stemGrad.addColorStop(1,   isTrack ? '#4a1800' : '#333333');
+      ctx.fillStyle = stemGrad;
+      ctx.beginPath();
+      ctx.rect(-hornStemW/2, 0, hornStemW, hornStemLen + hornBallR);
+      ctx.fill();
+      ctx.restore();
+
+      // Detonatör topu — parlak metal top
+      const ballGrad = ctx.createRadialGradient(
+        ballX - hornBallR*.3, ballY - hornBallR*.3, 0,
+        ballX, ballY, hornBallR
+      );
+      ballGrad.addColorStop(0,   isTrack ? '#ffcc88' : '#dddddd');
+      ballGrad.addColorStop(0.45, isTrack ? '#cc5500' : '#888888');
+      ballGrad.addColorStop(1,   isTrack ? '#3a0e00' : '#1a1a1a');
+      ctx.fillStyle = ballGrad;
+      ctx.strokeStyle = isTrack ? '#aa4400' : '#555';
+      ctx.lineWidth = W * 0.001;
+      ctx.beginPath(); ctx.arc(ballX, ballY, hornBallR, 0, Math.PI*2);
+      ctx.fill(); ctx.stroke();
+    }
+
+    // ── ANA GÖVDE — küresel metal top ──────────
+    // Temel renk katmanı
+    const base = ctx.createRadialGradient(
+      -bodyR*.3, -bodyR*.35, bodyR*.04,
+       bodyR*.1,  bodyR*.1,  bodyR*1.1
+    );
+    if (isTrack) {
+      base.addColorStop(0,    '#e87030');
+      base.addColorStop(0.25, '#b04010');
+      base.addColorStop(0.6,  '#5a1a00');
+      base.addColorStop(1,    '#1a0500');
+    } else {
+      base.addColorStop(0,    '#c0c0c0');
+      base.addColorStop(0.25, '#787878');
+      base.addColorStop(0.6,  '#303030');
+      base.addColorStop(1,    '#0a0a0a');
+    }
+    ctx.fillStyle = base;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR, 0, Math.PI*2); ctx.fill();
+
+    // Kenar çizgisi
+    ctx.strokeStyle = isTrack ? '#cc6622' : '#666666';
+    ctx.lineWidth = W * 0.0018;
+    ctx.stroke();
+
+    // ── Ekvator bandı (metal kaynağı hattı) ────
+    ctx.save();
+    ctx.strokeStyle = isTrack ? '#883300' : '#444444';
+    ctx.lineWidth = W * 0.004;
+    ctx.globalAlpha = alpha * 0.7;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.97, 0, Math.PI*2); ctx.stroke();
+    // İkinci ince çizgi
+    ctx.lineWidth = W * 0.0012;
+    ctx.strokeStyle = isTrack ? '#ffaa55' : '#999999';
+    ctx.globalAlpha = alpha * 0.35;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.93, 0, Math.PI*2); ctx.stroke();
+    ctx.restore();
+
+    // ── Parlak speküler vurgu (sol üst — ışık yansıması) ───────
+    const spec = ctx.createRadialGradient(
+      -bodyR*.32, -bodyR*.38, 0,
+      -bodyR*.18, -bodyR*.22, bodyR*.52
+    );
+    spec.addColorStop(0,   isTrack ? 'rgba(255,220,180,0.72)' : 'rgba(255,255,255,0.68)');
+    spec.addColorStop(0.5, isTrack ? 'rgba(255,160,80,0.18)'  : 'rgba(220,220,220,0.15)');
+    spec.addColorStop(1,   'rgba(0,0,0,0)');
+    ctx.fillStyle = spec;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR, 0, Math.PI*2); ctx.fill();
+
+    // ── Küçük keskin parlama noktası ───────────
+    const glint = ctx.createRadialGradient(
+      -bodyR*.28, -bodyR*.32, 0,
+      -bodyR*.28, -bodyR*.32, bodyR*.16
+    );
+    glint.addColorStop(0, 'rgba(255,255,255,0.85)');
+    glint.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = glint;
+    ctx.beginPath(); ctx.arc(-bodyR*.28, -bodyR*.32, bodyR*.16, 0, Math.PI*2); ctx.fill();
+
+    // ── Merkez perçin ──────────────────────────
+    const rivetGrad = ctx.createRadialGradient(
+      -bodyR*.05, -bodyR*.06, 0,
+       0, 0, bodyR*.2
+    );
+    rivetGrad.addColorStop(0,  isTrack ? '#ffaa66' : '#cccccc');
+    rivetGrad.addColorStop(0.5, isTrack ? '#882200' : '#555555');
+    rivetGrad.addColorStop(1,  isTrack ? '#330a00' : '#111111');
+    ctx.fillStyle = rivetGrad;
+    ctx.strokeStyle = isTrack ? '#cc5500' : '#888888';
+    ctx.lineWidth = W * 0.0014;
+    ctx.beginPath(); ctx.arc(0, 0, bodyR * 0.18, 0, Math.PI*2);
+    ctx.fill(); ctx.stroke();
+
+    ctx.restore();
+
+    // ── Hareket eden tiplerde dönen kesik halka ──
+    if (this.type !== 'static') {
+      ctx.save(); ctx.globalAlpha = alpha * 0.4;
+      ctx.translate(cx, cy); ctx.rotate(-this.rot * 0.6);
+      ctx.strokeStyle = isTrack ? '#dd6600' : '#888888';
+      ctx.lineWidth = W * 0.0018;
+      ctx.setLineDash([W*.005, W*.008]);
+      ctx.beginPath(); ctx.arc(0, 0, r * 1.38, 0, Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  GAME STATE
+// ═══════════════════════════════════════════════════════
+let gs   = 'MENU';
+let lvl  = sv.lvl||1, lives=4, ck=sv.ck||1, pb=sv.pb||0;
+let px=0, py=0, ptouching=false, spd=0;
+let movingNow=false, startZoneTouch=false;
+let minesVis=true, memT=0, memDur=3;
+let invT=0, pauseT=0, warnFlash=0;
+let landR=0, completeT=0, failReason='';
+let mines=[], ghost=[], ghostAlpha=0;
+let framedt=0.016;
+let screenFlash=0, screenFlashCol='rgba(255,255,255,';
+// DYING state — patlama animasyonu bitmeden ekran geçişi yok
+let dyingTimer=0, dyingIsGameOver=false;
+
+// ═══════════════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════════════
+function buildMines(n) {
+  return LEVELS[n-1].mines.map(d => new Mine(d));
+}
+
+function calcMemDur(n) {
+  const ph=Math.ceil(n/5);
+  const st=[3.0,2.5,3.0,2.5,2.0], en=[1.0,1.5,1.5,1.5,1.0];
+  const t=((n-1)%5)/4;
+  return st[ph-1]+(en[ph-1]-st[ph-1])*t + Math.min(pb,8);
+}
+
+function startLevel(n) {
+  lvl = clamp(n,1,25);
+  mines = buildMines(lvl);
+  minesVis=true; movingNow=false; startZoneTouch=false;
+  invT=pauseT=warnFlash=0; ghost=[]; ghostAlpha=0;
+  spd=0; landR=W*.25; screenFlash=0;
+  memDur=calcMemDur(lvl); memT=0;
+  TRAIL.clear(); PS.clear();
+  bgmStart();
+  const ph=Math.ceil(lvl/5);
+  gs=[1,6,11,16,21].includes(lvl) ? 'TUTORIAL' : 'MEMORY';
+  if (gs==='MEMORY') SFX.mem();
+}
+
+function loseLife(reason) {
+  failReason=reason; ghost=[...TRAIL.pts]; ghostAlpha=1;
+  movingNow=false; startZoneTouch=false; spd=0;
+  humStop();
+
+  if (reason==='mine') {
+    screenFlash=0.55; screenFlashCol='rgba(255,60,0,';
+    SHAKE.trigger(W*.016, .35);
+  } else if (reason==='up') {
+    screenFlash=0.35; screenFlashCol='rgba(255,0,100,';
+    SHAKE.trigger(W*.008, .2); SFX.up();
+  } else {
+    screenFlash=0.35; screenFlashCol='rgba(255,150,0,';
+    SHAKE.trigger(W*.008, .2); SFX.lose();
+  }
+
+  lives--;
+  if (lives<=0) {
+    lives=4;
+    dyingIsGameOver=true;
+    lvl = sv.legacy ? 1 : ck;
+    if (sv.legacy) { sv.ck=1; ck=1; }
+    sv.lvl=Math.max(sv.lvl||1,ck); doSave();
+  } else {
+    dyingIsGameOver=false;
+    TRAIL.clear();
+  }
+
+  // Süre: mayın patlaması için uzun, diğerleri için kısa
+  dyingTimer = (reason==='mine') ? 4.2 : 2.2;
+  gs='DYING';
+}
+
+function levelComplete() {
+  const stars = lives===4?3:lives>=3?2:1;
+  sv.stars=sv.stars||{};
+  if (!sv.stars[lvl]||sv.stars[lvl]<stars) sv.stars[lvl]=stars;
+  if (lives===4 && Math.ceil(lvl/5) > 1) { pb=Math.min(pb+1,8); sv.pb=pb; SFX.perfect(); }
+  else if (lives===4) SFX.perfect();
+  else SFX.clear();
+  const newCk=(Math.ceil(lvl/5)-1)*5+1;
+  if (newCk>(sv.ck||1)) { sv.ck=newCk; ck=newCk; }
+  if (lvl>(sv.lvl||1)) sv.lvl=lvl;
+  screenFlash=0.6; screenFlashCol='rgba(0,255,150,'; SHAKE.trigger(W*.005,.2);
+  gs='COMPLETE'; completeT=0; movingNow=false; doSave();
+}
+
+// ═══════════════════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════════════════
+function ptrDown(x, y) {
+  ptouching=true; px=x; py=y; spd=0;
+  if (audCtx && audCtx.state==='suspended') audCtx.resume();
+  // İlk dokunuşta müzik başlasın (tarayıcı etkileşim zorunluluğu)
+  bgmStart();
+
+  if (gs==='DYING') {
+    // Mesajlar görününceye kadar (1.5s) dokunuşu yoksay, sonra geçiş yap
+    const totalDur2 = failReason==='mine' ? 4.2 : 2.2;
+    const elapsed2  = totalDur2 - dyingTimer;
+    if (elapsed2 < 1.5) return;
+    SFX.click();
+    if (dyingIsGameOver) { gs='GAMEOVER'; completeT=0; }
+    else {
+      mines = buildMines(lvl);
+      TRAIL.clear(); invT=0; pauseT=0; warnFlash=0;
+      memDur=calcMemDur(lvl); memT=0;
+      minesVis=true; gs='MEMORY'; SFX.mem();
+    }
+    return;
+  }
+  if (gs==='MENU')     { SFX.click(); startLevel(lvl); return; }
+  if (gs==='TUTORIAL') { SFX.click(); gs='MEMORY'; memT=0; SFX.mem(); return; }
+  if (gs==='COMPLETE' && completeT>.5)  { SFX.click(); lvl<25 ? startLevel(lvl+1) : (gs='MENU'); return; }
+  if (gs==='GAMEOVER'  && completeT>1)  { SFX.click(); gs='MENU'; return; }
+  if (gs==='PAUSE') { checkPauseBtn(x,y); return; }
+
+  const ph=Math.ceil(lvl/5);
+  if ((gs==='PLAY'||gs==='MEMORY') && ph<5 && x<W*.16 && y>H*.91 && gs==='PLAY') {
+    SFX.click(); gs='PAUSE'; movingNow=false; ptouching=false; return;
+  }
+  // MEMORY fazında başlangıç bölgesi dokunuşunu kaydet ama hareketi başlatma
+  if (gs==='PLAY' && py >= H*.82) startZoneTouch=true;
+}
+
+function ptrMove(x, y) {
+  if (!ptouching) return;
+  const dx=x-px, dy=y-py;
+  spd=Math.sqrt(dx*dx+dy*dy)/(framedt||.016);
+  px=x; py=y;
+  // MEMORY fazında parmak izlenmez, hareket başlamaz
+  if (gs!=='PLAY') return;
+  if (movingNow||startZoneTouch) TRAIL.add(x,y);
+  if (startZoneTouch&&!movingNow&&y<H*.82) { movingNow=true; humStart(); }
+  if (movingNow) humUpdate(spd);
+}
+
+function ptrUp() {
+  ptouching=false;
+  humStop();
+  // invT>0 ise oyuncu zaten mayına çarptı — ekstra can cezası verme,
+  // patlama animasyonu tamamlansın diye PLAY'de kal.
+  if (gs==='PLAY' && movingNow && invT<=0) loseLife('up');
+  movingNow=false; startZoneTouch=false; spd=0;
+}
+
+cvs.addEventListener('touchstart', e=>{ e.preventDefault(); const t=e.touches[0],r=cvs.getBoundingClientRect(); ptrDown(t.clientX-r.left,t.clientY-r.top); },{passive:false});
+cvs.addEventListener('touchmove',  e=>{ e.preventDefault(); const t=e.touches[0],r=cvs.getBoundingClientRect(); ptrMove(t.clientX-r.left,t.clientY-r.top); },{passive:false});
+cvs.addEventListener('touchend',   e=>{ e.preventDefault(); ptrUp(); },{passive:false});
+cvs.addEventListener('touchcancel',e=>{ e.preventDefault(); ptrUp(); },{passive:false});
+cvs.addEventListener('mousedown',  e=>{ const r=cvs.getBoundingClientRect(); ptrDown(e.clientX-r.left,e.clientY-r.top); });
+cvs.addEventListener('mousemove',  e=>{ const r=cvs.getBoundingClientRect(); ptrMove(e.clientX-r.left,e.clientY-r.top); });
+cvs.addEventListener('mouseup',    ()=>ptrUp());
+window.addEventListener('mouseup', ()=>{ if(ptouching) ptrUp(); });
+
+// ═══════════════════════════════════════════════════════
+//  PAUSE BUTTONS
+// ═══════════════════════════════════════════════════════
+const PBTN=[
+  {lbl:'DEVAM',          fn:()=>{ gs='PLAY'; }},
+  {lbl:'YENİDEN BAŞLAT', fn:()=>startLevel(lvl)},
+  {lbl:'ANA MENÜ',       fn:()=>{ gs='MENU'; }},
+];
+function checkPauseBtn(x,y) {
+  PBTN.forEach((b,i)=>{
+    const by2=H*(.36+i*.15); const bh=H*.11;
+    if (x>=W*.10&&x<=W*.90&&y>=by2&&y<=by2+bh){ SFX.click(); b.fn(); }
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  UPDATE
+// ═══════════════════════════════════════════════════════
+function update(dt) {
+  DUST.update(dt); PS.update(dt); SHAKE.update(dt);
+  if (ghostAlpha>0) ghostAlpha=Math.max(0,ghostAlpha-dt*1.5);
+  if (screenFlash>0) screenFlash=Math.max(0,screenFlash-dt*2.5);
+
+  if (gs==='MEMORY') {
+    mines.forEach(m=>m.update(dt,px,py,false,null));
+    memT+=dt; if(memT>=memDur){minesVis=false;gs='PLAY';}
+    return;
+  }
+
+  if (gs==='PLAY') {
+    const ph=Math.ceil(lvl/5);
+    const lanActive = ph>=3;
+    if (invT>0) invT-=dt;
+    if (warnFlash>0) warnFlash-=dt;
+    TRAIL.update(dt);
+
+    // Lantern radius
+    if (!lanActive) { landR=W*2; }
+    else if (!movingNow) { landR=lerp(landR,W*.25,dt*4); }
+    else {
+      const norm=clamp(spd/350,0,1);
+      const target=lerp(W*.08,W*.25,norm);
+      landR=lerp(landR,target,dt*5);
+    }
+
+    mines.forEach(m=>m.update(dt,px,py,movingNow,lanActive?landR:null));
+
+    // Phase 5 pause penalty
+    if (ph===5&&movingNow) {
+      if (spd<5){ pauseT+=dt; if(pauseT>=.3){warnFlash=.6;SFX.tick();} if(pauseT>=.5){pauseT=0;warnFlash=0;loseLife('pause');return;} }
+      else {pauseT=0;warnFlash=0;}
+    }
+
+    // Collision
+    if (movingNow && invT<=0) {
+      for (const m of mines) {
+        const dx=px-m.x,dy=py-m.y,d=Math.sqrt(dx*dx+dy*dy);
+        if (d < m.hitR()+W*.022*.8) { PS.explode(m.x,m.y); loseLife('mine'); break; }
+      }
+    }
+
+    // Win
+    if (movingNow&&py<=H*.13) levelComplete();
+    return;
+  }
+
+  if (gs==='DYING') {
+    mines.forEach(m=>m.update(dt,0,0,false,null));
+    if (dyingTimer > 0) dyingTimer -= dt;
+    // Geçiş artık otomatik değil — ptrDown halleder
+    return;
+  }
+
+  if (gs==='COMPLETE'||gs==='GAMEOVER') completeT+=dt;
+}
+
+// ═══════════════════════════════════════════════════════
+//  DRAW HELPERS
+// ═══════════════════════════════════════════════════════
+function glowText(text, x, y, size, col, align='center') {
+  ctx.save();
+  ctx.font=`bold ${size}px 'Trebuchet MS', 'Segoe UI', sans-serif`;
+  ctx.textAlign=align;
+  ctx.shadowBlur=size*.15; ctx.shadowColor=col;
+  ctx.fillStyle=col;
+  ctx.fillText(text,x,y);
+  ctx.restore();
+}
+
+function softText(text, x, y, size, col, align='center') {
+  ctx.save();
+  ctx.font=`${size}px 'Trebuchet MS', 'Segoe UI', sans-serif`;
+  ctx.textAlign=align; ctx.fillStyle=col;
+  ctx.fillText(text,x,y);
+  ctx.restore();
+}
+
+// Başlık için serif font
+function titleText(text, x, y, size, col, align='center') {
+  ctx.save();
+  ctx.font=`bold ${size}px Georgia, 'Times New Roman', serif`;
+  ctx.textAlign=align; ctx.fillStyle=col;
+  ctx.fillText(text,x,y);
+  ctx.restore();
+}
+
+// ── LOGO çizici ──────────────────────────────────────────────
+function drawLogo(cx, topY, acc, t) {
+  const [ar,ag,ab] = acc.slice(1).match(/.{2}/g).map(h=>parseInt(h,16));
+
+  // --- YOL İKONU ---
+  // Kıvrımlı yol: başlangıç noktasından bitiş noktasına L-şekilli hat
+  const is = W * 0.068;
+  const iy = topY + is * 0.85;
+  const pulse = 0.7 + 0.3 * Math.sin(t * 1.8);
+
+  ctx.save();
+  ctx.translate(cx, iy);
+
+  // Dış halka (ince, soluk)
+  ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = acc;
+  ctx.lineWidth = W * 0.001;
+  ctx.beginPath(); ctx.arc(0, 0, is * 1.15, 0, Math.PI*2); ctx.stroke();
+
+  // Yol çizgisi (kıvrımlı L)
+  ctx.globalAlpha = 0.82;
+  ctx.strokeStyle = acc;
+  ctx.lineWidth = W * 0.004;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-is*.42,  is*.38);   // başlangıç (alt-sol)
+  ctx.lineTo(-is*.42, -is*.08);   // yukarı
+  ctx.lineTo( is*.08, -is*.08);   // sağa
+  ctx.lineTo( is*.08,  is*.22);   // aşağı
+  ctx.lineTo( is*.42,  is*.22);   // sağa
+  ctx.lineTo( is*.42, -is*.38);   // yukarı (bitiş)
+  ctx.stroke();
+
+  // Başlangıç noktası (küçük daire, beyaz)
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = '#c8d0e8';
+  ctx.beginPath(); ctx.arc(-is*.42, is*.38, W*.0065, 0, Math.PI*2); ctx.fill();
+
+  // Bitiş noktası (parlayan, accent rengi)
+  ctx.globalAlpha = pulse * 0.9;
+  ctx.fillStyle = acc;
+  ctx.beginPath(); ctx.arc(is*.42, -is*.38, W*.009, 0, Math.PI*2); ctx.fill();
+  // iç beyaz nokta
+  ctx.globalAlpha = pulse * 0.7;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(is*.42, -is*.38, W*.004, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+
+  // --- "HIDDEN" — harf aralıklı, ince ---
+  const hidY = iy + is * 1.18;
+  const hidLetters = 'HIDDEN'.split('');
+  const hidSp = W * 0.044;
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.font = `${W*.036}px 'Trebuchet MS', 'Segoe UI', sans-serif`;
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},0.75)`;
+  hidLetters.forEach((ch, i) => {
+    ctx.fillText(ch, cx + (i - (hidLetters.length-1)/2) * hidSp, hidY);
+  });
+  ctx.restore();
+
+  // --- İnce ayraç çizgi ---
+  const lineY = hidY + W * 0.018;
+  ctx.save();
+  const lg = ctx.createLinearGradient(cx - W*.28, 0, cx + W*.28, 0);
+  lg.addColorStop(0,   'rgba(0,0,0,0)');
+  lg.addColorStop(0.35, `rgba(${ar},${ag},${ab},0.30)`);
+  lg.addColorStop(0.5,  `rgba(${ar},${ag},${ab},0.55)`);
+  lg.addColorStop(0.65, `rgba(${ar},${ag},${ab},0.30)`);
+  lg.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.strokeStyle = lg; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx - W*.28, lineY); ctx.lineTo(cx + W*.28, lineY); ctx.stroke();
+  // Ortadaki küçük elmas (◆)
+  ctx.save();
+  ctx.translate(cx, lineY);
+  ctx.rotate(Math.PI/4);
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},0.5)`;
+  ctx.fillRect(-W*.005, -W*.005, W*.01, W*.01);
+  ctx.restore();
+  ctx.restore();
+
+  // --- "PATH" — büyük, kalın, serif ---
+  const pathY = lineY + W * 0.118;
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.font = `bold ${W*.108}px Georgia, 'Times New Roman', serif`;
+  ctx.fillStyle = '#e8eaf6';
+  ctx.globalAlpha = 0.90;
+  ctx.fillText('PATH', cx, pathY);
+  // Hafif gölge / derinlik (aynı yazıyı biraz kaydır)
+  ctx.globalAlpha = 0.07;
+  ctx.fillStyle = `rgba(${ar},${ag},${ab},1)`;
+  ctx.fillText('PATH', cx + W*.002, pathY + W*.003);
+  ctx.restore();
+}
+
+function drawCheckerEnd() {
+  // Koyu cam zemin
+  const bg = ctx.createLinearGradient(0, 0, 0, H*.13);
+  bg.addColorStop(0, 'rgba(10,10,30,0.95)');
+  bg.addColorStop(1, 'rgba(10,10,30,0.6)');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H*.13);
+
+  // Yatay neon çizgiler (futuristik tarama efekti)
+  const lineCount = 6;
+  for (let i=0; i<lineCount; i++) {
+    const y = (i/lineCount) * H*.11 + H*.005;
+    const a = 0.06 + (i/lineCount)*0.04;
+    ctx.strokeStyle = `rgba(180,230,255,${a})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+  }
+
+  // Dikey parıltı sütunları
+  for (let i=0; i<5; i++) {
+    const x = (i/4)*W;
+    const gc = ctx.createLinearGradient(x-W*.04,0, x+W*.04,0);
+    gc.addColorStop(0,'rgba(100,180,255,0)');
+    gc.addColorStop(.5,`rgba(100,180,255,${0.06+i*.008})`);
+    gc.addColorStop(1,'rgba(100,180,255,0)');
+    ctx.fillStyle=gc; ctx.fillRect(x-W*.04,0,W*.08,H*.12);
+  }
+
+  // Bitiş çizgisi — parlak yatay bant
+  const pulse = .7 + .3*Math.sin(Date.now()*.003);
+  const gl = ctx.createLinearGradient(0,0,W,0);
+  gl.addColorStop(0,   'rgba(100,210,255,0)');
+  gl.addColorStop(.15, `rgba(180,240,255,${pulse})`);
+  gl.addColorStop(.5,  `rgba(255,255,255,${pulse})`);
+  gl.addColorStop(.85, `rgba(180,240,255,${pulse})`);
+  gl.addColorStop(1,   'rgba(100,210,255,0)');
+  ctx.save();
+  ctx.strokeStyle = gl; ctx.lineWidth = 2.5;
+  ctx.shadowBlur = 18; ctx.shadowColor = 'rgba(150,220,255,0.9)';
+  ctx.beginPath(); ctx.moveTo(0,H*.12); ctx.lineTo(W,H*.12); ctx.stroke();
+  ctx.shadowBlur = 0; ctx.restore();
+
+  // "BİTİŞ" etiketi
+  ctx.save(); ctx.globalAlpha = .65;
+  ctx.textAlign = 'center';
+  ctx.font = `${W*.032}px Georgia, serif`;
+  ctx.fillStyle = 'rgba(200,230,255,0.85)';
+  ctx.letterSpacing = '0.15em';
+  ctx.fillText('B İ T İ Ş', W/2, H*.076);
+  ctx.restore();
+
+  // Alt geçiş gradyanı
+  const gf = ctx.createLinearGradient(0,H*.12,0,H*.15);
+  gf.addColorStop(0,'rgba(100,180,255,0.12)'); gf.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=gf; ctx.fillRect(0,H*.12,W,H*.03);
+}
+
+function drawStartZone() {
+  const t = Date.now();
+
+  // Frosted glass zemin
+  const gb = ctx.createLinearGradient(0, H*.83, 0, H);
+  gb.addColorStop(0, 'rgba(140,180,255,0.10)');
+  gb.addColorStop(.4, 'rgba(100,140,220,0.06)');
+  gb.addColorStop(1,  'rgba(60,80,160,0.03)');
+  ctx.fillStyle=gb; ctx.fillRect(0,H*.83,W,H*.17);
+
+  // Glass iç yansıma (sol üst köşeden inen ışık şeridi)
+  const gs2 = ctx.createLinearGradient(0,H*.83, W*.45,H);
+  gs2.addColorStop(0,'rgba(255,255,255,0.055)');
+  gs2.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.fillStyle=gs2; ctx.fillRect(0,H*.83,W,H*.17);
+
+  // Üst kenar — cam kenarlığı (soldan sağa parlayan ince çizgi)
+  const pulse = .55 + .25*Math.sin(t*.0025);
+  const ge = ctx.createLinearGradient(0,0,W,0);
+  ge.addColorStop(0,   'rgba(160,210,255,0)');
+  ge.addColorStop(.25, `rgba(200,230,255,${pulse})`);
+  ge.addColorStop(.5,  `rgba(255,255,255,${pulse+.1})`);
+  ge.addColorStop(.75, `rgba(200,230,255,${pulse})`);
+  ge.addColorStop(1,   'rgba(160,210,255,0)');
+  ctx.save();
+  ctx.strokeStyle=ge; ctx.lineWidth=1.5;
+  ctx.shadowBlur=14; ctx.shadowColor='rgba(160,210,255,0.7)';
+  ctx.beginPath(); ctx.moveTo(0,H*.83); ctx.lineTo(W,H*.83); ctx.stroke();
+  // İnce ikinci çizgi (derinlik)
+  ctx.globalAlpha=.3; ctx.lineWidth=.5;
+  ctx.beginPath(); ctx.moveTo(W*.05,H*.833); ctx.lineTo(W*.95,H*.833); ctx.stroke();
+  ctx.shadowBlur=0; ctx.restore();
+
+  // Parmak izi noktaları (cam üzerindeki ışık yansıması efekti)
+  for (let i=0;i<3;i++) {
+    const x = W*(.25+i*.25);
+    const a = .04 + .02*Math.sin(t*.002+i*1.5);
+    ctx.save(); ctx.globalAlpha=a;
+    const gr = ctx.createRadialGradient(x,H*.885,0, x,H*.885,W*.08);
+    gr.addColorStop(0,'rgba(255,255,255,1)'); gr.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=gr;
+    ctx.beginPath(); ctx.arc(x,H*.885,W*.08,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawHUD() {
+  const ph=Math.ceil(lvl/5);
+
+  // ── Bölüm yazısı (neon azaltıldı) ────────────────────
+  ctx.save();
+  ctx.font=`bold ${W*.038}px 'Courier New',monospace`;
+  ctx.textAlign='left';
+  ctx.fillStyle='rgba(180,230,255,0.85)';
+  ctx.shadowBlur=0;
+  ctx.fillText(`BÖLÜM ${lvl}`, W*.04, H*.068);
+  ctx.restore();
+
+  // Faz adı
+  softText(PHASES[ph-1].name, W*.04, H*.100, W*.024, 'rgba(100,130,180,0.7)', 'left');
+
+  // ── 25 noktalı ilerleme göstergesi ───────────────────
+  const dotCount = 25;
+  const dotR     = W * 0.0085;
+  const spacing  = W * 0.026;
+  const totalW   = (dotCount - 1) * spacing;
+  const startX   = W / 2 - totalW / 2;
+  const dotY     = H * 0.118;
+
+  for (let i = 0; i < dotCount; i++) {
+    const x    = startX + i * spacing;
+    const done = i < lvl;           // tamamlanan bölümler
+    const cur  = i === lvl - 1;     // mevcut bölüm
+    const ph_i = Math.floor(i / 5); // hangi faz rengi
+
+    const phColors = ['#00bcd4','#4caf50','#9c27b0','#ff5722','#f44336'];
+    const col = phColors[ph_i];
+
+    ctx.save();
+    if (cur) {
+      // Aktif nokta — büyük, hafif parıltı
+      ctx.shadowBlur = 8; ctx.shadowColor = col;
+      ctx.fillStyle = col;
+      ctx.beginPath(); ctx.arc(x, dotY, dotR * 1.5, 0, Math.PI*2); ctx.fill();
+      // İç beyaz nokta
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.beginPath(); ctx.arc(x, dotY, dotR * 0.55, 0, Math.PI*2); ctx.fill();
+    } else if (done) {
+      // Tamamlanan — dolu ama sönük
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.45;
+      ctx.beginPath(); ctx.arc(x, dotY, dotR, 0, Math.PI*2); ctx.fill();
+    } else {
+      // Kilitli — sadece çerçeve
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = W * 0.001;
+      ctx.beginPath(); ctx.arc(x, dotY, dotR * 0.85, 0, Math.PI*2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // ── Canlar ───────────────────────────────────────────
+  for (let i=0;i<4;i++) {
+    ctx.save();
+    ctx.fillStyle = i<lives ? '#dd2244' : '#1a0a10';
+    ctx.shadowBlur= 0;
+    ctx.font=`${W*.048}px sans-serif`; ctx.textAlign='right';
+    ctx.fillText('♥', W-W*.04-i*W*.058, H*.075);
+    ctx.restore();
+  }
+  // Pause button
+  if (ph<5&&gs==='PLAY') {
+    ctx.fillStyle='rgba(255,255,255,0.06)';
+    ctx.fillRect(W*.03,H*.918,W*.11,H*.06);
+    softText('II',W*.085,H*.962,W*.038,'rgba(255,255,255,0.4)');
+  }
+  // Memory bar
+  if (gs==='MEMORY') {
+    const p=1-memT/memDur;
+    ctx.fillStyle='rgba(0,229,255,0.12)';
+    ctx.fillRect(0,H*.125,W,H*.008);
+    const bg=ctx.createLinearGradient(0,0,W*p,0);
+    bg.addColorStop(0,'#00e5ff'); bg.addColorStop(1,'#0088ff');
+    ctx.fillStyle=bg; ctx.fillRect(0,H*.125,W*p,H*.008);
+    glowText('EZBERLE!',W/2,H*.148,W*.042,'rgba(0,229,255,0.7)');
+  }
+  // Phase 5 warning bar
+  if (Math.ceil(lvl/5)===5&&movingNow&&pauseT>0) {
+    ctx.fillStyle='rgba(255,0,0,0.9)';
+    ctx.fillRect(0,H-5,W*(pauseT/.5),5);
+    ctx.shadowBlur=0;
+  }
+}
+
+function drawLantern() {
+  const tmp=document.createElement('canvas'); tmp.width=W; tmp.height=H;
+  const tc=tmp.getContext('2d');
+  tc.fillStyle='rgba(0,0,15,0.94)'; tc.fillRect(0,0,W,H);
+  tc.globalCompositeOperation='destination-out';
+  const g=tc.createRadialGradient(px,py,landR*.2,px,py,landR);
+  g.addColorStop(0,'rgba(0,0,0,1)');
+  g.addColorStop(.6,'rgba(0,0,0,0.85)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  tc.fillStyle=g; tc.beginPath(); tc.arc(px,py,landR,0,Math.PI*2); tc.fill();
+  ctx.drawImage(tmp,0,0);
+}
+
+function drawPlayer() {
+  if (!ptouching&&!movingNow&&!startZoneTouch) return;
+  const isInv = invT>0;
+  const col = isInv ? `hsl(${Date.now()*.2%360},100%,70%)` : '#00e5ff';
+  // Outer glow
+  const g=ctx.createRadialGradient(px,py,0,px,py,W*.075);
+  g.addColorStop(0,isInv?'rgba(255,255,0,0.5)':'rgba(0,229,255,0.5)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.save(); ctx.fillStyle=g;
+  ctx.beginPath(); ctx.arc(px,py,W*.075,0,Math.PI*2); ctx.fill();
+  // Core
+  ctx.fillStyle=col; ctx.shadowBlur=W*.04; ctx.shadowColor=col;
+  ctx.beginPath(); ctx.arc(px,py,W*.022,0,Math.PI*2); ctx.fill();
+  // Bright center
+  ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.shadowBlur=0;
+  ctx.beginPath(); ctx.arc(px,py,W*.008,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════
+//  SCREENS
+// ═══════════════════════════════════════════════════════
+function renderMenu() {
+  const ph = Math.ceil(lvl/5);
+  const acc = phCol(ph);
+  const t   = Date.now() * 0.001;
+
+  DUST.draw();
+
+  // ═══ LOGO ════════════════════════════════════════════
+  drawLogo(W/2, H*.13, acc, t);
+
+  // Faz adı (logonun hemen altı)
+  softText(PHASES[ph-1].name, W/2, H*.465, W*.030, 'rgba(160,172,200,0.58)');
+
+  // Level info card
+  ctx.save();
+  const cardY = H*.505, cardH = H*.082;
+  const cardG = ctx.createLinearGradient(0,cardY,0,cardY+cardH);
+  cardG.addColorStop(0,'rgba(255,255,255,0.055)');
+  cardG.addColorStop(1,'rgba(255,255,255,0.018)');
+  ctx.fillStyle=cardG;
+  ctx.beginPath(); ctx.roundRect(W*.10,cardY,W*.80,cardH,W*.014); ctx.fill();
+  const [ar,ag,ab] = acc.slice(1).match(/.{2}/g).map(h=>parseInt(h,16));
+  ctx.strokeStyle=`rgba(${ar},${ag},${ab},0.22)`; ctx.lineWidth=1; ctx.stroke();
+  ctx.restore();
+  softText(`BÖLÜM ${lvl}  /  25   ·   FAZ ${ph}`, W/2, H*.558, W*.034, '#b0bcd8');
+
+  // Tap to play (blinking)
+  if (Math.floor(Date.now()/620)%2===0)
+    softText('EKRANA DOKUN', W/2, H*.725, W*.036, 'rgba(220,225,240,0.50)');
+
+  // Hearts
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`${W*.054}px sans-serif`;
+  for (let i=0;i<4;i++) {
+    ctx.fillStyle = i<lives ? '#e53935' : '#200a0d';
+    ctx.fillText('♥', W/2+(i-1.5)*W*.064, H*.838);
+  }
+  ctx.restore();
+
+  if (pb>0) softText(`+${pb}s hafıza bonusu aktif`, W/2, H*.900, W*.027, 'rgba(255,193,7,0.65)');
+}
+
+function renderTutorial() {
+  const ph=Math.ceil(lvl/5);
+  const acc = phCol(ph);
+  ctx.fillStyle='rgba(2,4,18,0.92)'; ctx.fillRect(0,0,W,H);
+  DUST.draw();
+
+  // Accent line at top
+  ctx.save(); ctx.globalAlpha=0.4;
+  const tg = ctx.createLinearGradient(0,0,W,0);
+  tg.addColorStop(0,'rgba(0,0,0,0)'); tg.addColorStop(0.5,acc); tg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=tg; ctx.fillRect(0,H*.135,W,2);
+  ctx.restore();
+
+  // "Yeni aşama" etiketi
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`${W*.032}px 'Trebuchet MS', 'Segoe UI', sans-serif`;
+  ctx.fillStyle=`rgba(${acc.slice(1).match(/.{2}/g).map(h=>parseInt(h,16)).join(',')},0.7)`;
+  ctx.fillText('Yeni aşama', W/2, H*.175);
+  ctx.restore();
+
+  // Faz adı — büyük, serif
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`bold ${W*.058}px Georgia, 'Times New Roman', serif`;
+  ctx.fillStyle='#e8eaf6'; ctx.globalAlpha=0.92;
+  ctx.fillText(PHASES[ph-1].name.toLocaleUpperCase('tr-TR'), W/2, H*.268);
+  ctx.restore();
+
+  // Separator
+  ctx.save(); ctx.globalAlpha=0.22;
+  const sg2 = ctx.createLinearGradient(W*.15,0,W*.85,0);
+  sg2.addColorStop(0,'rgba(0,0,0,0)'); sg2.addColorStop(0.5,acc); sg2.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.strokeStyle=sg2; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(W*.15,H*.308); ctx.lineTo(W*.85,H*.308); ctx.stroke();
+  ctx.restore();
+
+  // Açıklama mesajı — tek bütün metin, satır kıralımlı
+  const msgs = [
+    'Mayınlar beliriyor. Konumlarını ezberle, parmağını ekrandan kaldırmadan bitiş çizgisine ulaş. Mayınlara dokunma.',
+    'Mayınlar artık hareket ediyor. Ritmini hisset ve doğru anı seç. Zamanlama her şeydir.',
+    'Ekran karardı. Parmağın hareket ettikçe etrafın aydınlanır. Sakın durma — durduğun an ışığın söner.',
+    'Karanlık ve hareketli mayınlar. Hafızan seni kurtaracak. Rotanı planla, kararlı ve kesintisiz ilerle.',
+    'Bu aşamada duraklat menüsü yoktur. 0.5 saniye durasan anında elenisin. Sadece ileri git.',
+  ][ph-1];
+
+  // Metni ekrana sığacak şekilde satırlara böl
+  const maxW = W * 0.78;
+  const fSize = W * 0.040;
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`${fSize}px 'Trebuchet MS', 'Segoe UI', sans-serif`;
+  ctx.fillStyle='rgba(185,190,215,0.80)';
+  const words = msgs.split(' ');
+  let line='', lineY=H*.385;
+  for (const word of words) {
+    const test = line ? line+' '+word : word;
+    if (ctx.measureText(test).width > maxW && line) {
+      ctx.fillText(line, W/2, lineY);
+      line=word; lineY+=fSize*1.55;
+    } else { line=test; }
+  }
+  if (line) ctx.fillText(line, W/2, lineY);
+  ctx.restore();
+
+  if (Math.floor(Date.now()/600)%2===0)
+    softText('DEVAM ETMEK İÇİN DOKUN', W/2, H*.875, W*.034, 'rgba(200,210,230,0.50)');
+}
+
+function renderGamePlay() {
+  const ph=Math.ceil(lvl/5);
+  const dark=ph>=3&&gs==='PLAY';
+
+  DUST.draw();
+  drawCheckerEnd();
+  drawStartZone();
+
+  // Oyun alanı yan vinyeti (yumuşak kenarlık)
+  const vL=ctx.createLinearGradient(0,0,W*.08,0);
+  vL.addColorStop(0,'rgba(0,0,0,0.4)'); vL.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=vL; ctx.fillRect(0,H*.13,W*.08,H*.70);
+  const vR=ctx.createLinearGradient(W,0,W*.92,0);
+  vR.addColorStop(0,'rgba(0,0,0,0.4)'); vR.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=vR; ctx.fillRect(W*.92,H*.13,W*.08,H*.70);
+
+  if (!movingNow&&gs==='PLAY') {
+    if (Math.floor(Date.now()/600)%2===0)
+      glowText('↑ PARMAĞINI YUKARI KAYDIR ↑',W/2,H*.955,W*.030,'rgba(0,255,120,0.5)');
+    glowText('BURADAN BAŞLA',W/2,H*.91,W*.037,'rgba(0,255,120,0.6)');
+  }
+
+  // Ghost trail
+  if (ghost.length>1 && ghostAlpha>.01) {
+    for (let i=1;i<ghost.length;i++) {
+      const p=ghost[i],q=ghost[i-1];
+      ctx.save(); ctx.globalAlpha=ghostAlpha*.45;
+      ctx.strokeStyle='#ffcc00'; ctx.lineWidth=W*.007; ctx.lineCap='round';
+      ctx.setLineDash([W*.01,W*.01]);
+      ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.setLineDash([]); ctx.restore();
+    }
+  }
+
+  // Mines
+  mines.forEach(m => {
+    if (gs==='MEMORY') { m.draw(1.0); return; }
+    if (dark) { m.draw(1.0); return; } // will be covered by lantern overlay
+    // Phases 1-2 play: invisible (only invincibility reveals briefly)
+    if (invT>0) m.draw(.18);
+  });
+
+  // Lantern overlay
+  if (dark) {
+    if (movingNow||startZoneTouch) drawLantern();
+    else { ctx.fillStyle='rgba(0,0,15,0.92)'; ctx.fillRect(0,0,W,H); }
+  }
+
+  TRAIL.draw();
+  PS.draw();
+  drawPlayer();
+
+  // Warning flash
+  if (warnFlash>0) {
+    const a=.3*(Math.sin(Date.now()*.04)+1)*.5*warnFlash;
+    ctx.fillStyle=`rgba(255,0,0,${a})`; ctx.fillRect(0,0,W,H);
+  }
+  // Screen flash (hit/complete)
+  if (screenFlash>0) {
+    ctx.fillStyle=`${screenFlashCol}${screenFlash*.8})`; ctx.fillRect(0,0,W,H);
+  }
+
+  drawHUD();
+}
+
+function renderDying() {
+  const ph = Math.ceil(lvl/5);
+  const dark = ph>=3;
+
+  // Arka plan ve bölge göstergeleri
+  DUST.draw();
+  drawCheckerEnd();
+  drawStartZone();
+
+  // Mayınlar
+  mines.forEach(m => m.draw(dark ? 1.0 : 0.35));
+
+  // Karanlık overlay (faz 3+)
+  if (dark) {
+    ctx.fillStyle='rgba(0,0,15,0.92)'; ctx.fillRect(0,0,W,H);
+  }
+
+  // Ghost trail
+  if (ghost.length>1 && ghostAlpha>.01) {
+    for (let i=1;i<ghost.length;i++) {
+      const p=ghost[i],q=ghost[i-1];
+      ctx.save(); ctx.globalAlpha=ghostAlpha*.5;
+      ctx.strokeStyle='#ffcc00'; ctx.lineWidth=W*.007; ctx.lineCap='round';
+      ctx.setLineDash([W*.01,W*.01]);
+      ctx.beginPath(); ctx.moveTo(q.x,q.y); ctx.lineTo(p.x,p.y); ctx.stroke();
+      ctx.setLineDash([]); ctx.restore();
+    }
+  }
+
+  // Patlama parçacıkları — ana odak
+  PS.draw();
+
+  // Kademeli kararan overlay (animasyon biterken ekran kararır)
+  const totalDur = failReason==='mine' ? 4.2 : 2.2;
+  const elapsed  = totalDur - dyingTimer;          // 0 → totalDur
+  const fadeIn   = clamp(elapsed / totalDur, 0, 1);
+
+  // Ekran yavaşça kararır (0.6s sonra başlar)
+  if (elapsed > 0.6) {
+    const a = clamp((elapsed-0.6) / 1.2, 0, 0.75);
+    ctx.fillStyle=`rgba(0,0,10,${a})`;
+    ctx.fillRect(0,0,W,H);
+  }
+
+  // Screen flash
+  if (screenFlash>0) {
+    ctx.fillStyle=`${screenFlashCol}${screenFlash*.8})`; ctx.fillRect(0,0,W,H);
+  }
+
+  // HUD
+  drawHUD();
+
+  // Sebep yazısı — 0.8s sonra belirmeye başlar
+  if (elapsed > 0.8) {
+    const titles = {
+      mine:  'MAYINA ÇARPTIN',
+      up:    'PARMAK KALDIRILDI',
+      pause: 'DURAKLADIN'
+    };
+    const hints = {
+      mine:  'Mayınların konumunu aklında tut.',
+      up:    'Parmağını ekrandan kaldırmamalıydın.',
+      pause: 'Bu bölümde duraksamak yasak.'
+    };
+    const a = clamp((elapsed-0.8) / 0.4, 0, 1);
+    // Ana sebep başlığı
+    ctx.save(); ctx.textAlign='center';
+    ctx.font=`bold ${W*.050}px 'Trebuchet MS', sans-serif`;
+    ctx.fillStyle='#ef5350'; ctx.globalAlpha=a;
+    ctx.fillText(titles[failReason]||'', W/2, H*.40);
+    ctx.restore();
+    // İpucu metni
+    const hintA = clamp((elapsed-1.1) / 0.4, 0, 1);
+    softText(hints[failReason]||'', W/2, H*.49, W*.033, `rgba(210,170,170,${hintA*0.80})`);
+    // Kalan can
+    const canText = lives>0 ? `${lives} can kaldı` : 'checkpoint\'e dönülüyor...';
+    const canA = clamp((elapsed-1.3) / 0.3, 0, 1);
+    softText(canText, W/2, H*.565, W*.030, `rgba(180,130,130,${canA*0.70})`);
+    // Dokunma daveti — 1.5s sonra yanıp söner
+    if (elapsed >= 1.5 && Math.floor(Date.now()/600)%2===0)
+      softText('DEVAM ETMEK İÇİN DOKUN', W/2, H*.78, W*.032, 'rgba(200,210,230,0.48)');
+  }
+}
+
+function renderGameOver() {
+  DUST.draw(); PS.draw();
+  if (ghost.length>1&&ghostAlpha>.01) {
+    for(let i=1;i<ghost.length;i++){
+      const p=ghost[i],q=ghost[i-1];
+      ctx.save();ctx.globalAlpha=ghostAlpha*.4;
+      ctx.strokeStyle='#ff8f00';ctx.lineWidth=W*.006;ctx.lineCap='round';
+      ctx.setLineDash([W*.01,W*.01]);
+      ctx.beginPath();ctx.moveTo(q.x,q.y);ctx.lineTo(p.x,p.y);ctx.stroke();
+      ctx.setLineDash([]);ctx.restore();
+    }
+  }
+
+  // Dark vignette
+  const dv = ctx.createRadialGradient(W/2,H*.3,W*.05,W/2,H*.3,W*.7);
+  dv.addColorStop(0,'rgba(0,0,0,0)'); dv.addColorStop(1,'rgba(0,0,0,0.6)');
+  ctx.fillStyle=dv; ctx.fillRect(0,0,W,H);
+
+  const labels={mine:'Mayına Çarptın',up:'Parmak Ekrandan Kalktı',pause:'Odak Kaybı'};
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`bold ${W*.085}px 'Courier New',monospace`;
+  ctx.fillStyle='#ef5350'; ctx.globalAlpha=0.9;
+  ctx.fillText('ELENDİN', W/2, H*.28);
+  ctx.restore();
+
+  softText(labels[failReason]||'',W/2,H*.37,W*.035,'rgba(200,150,150,0.8)');
+
+  // Thin separator
+  ctx.save(); ctx.globalAlpha=0.2;
+  ctx.strokeStyle='#ef5350'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(W*.25,H*.44); ctx.lineTo(W*.75,H*.44); ctx.stroke();
+  ctx.restore();
+
+  softText(`Checkpoint: Bölüm ${ck}`,W/2,H*.52,W*.033,'rgba(150,150,190,0.75)');
+  softText(`Kalan can: ${lives}`,W/2,H*.58,W*.033,'rgba(200,100,110,0.8)');
+  if (ghost.length>1) softText('son rota gösteriliyor',W/2,H*.64,W*.026,'rgba(255,160,0,0.4)');
+  if (completeT>1&&Math.floor(Date.now()/600)%2===0)
+    softText('DEVAM ETMEK İÇİN DOKUN',W/2,H*.82,W*.036,'rgba(200,210,230,0.55)');
+}
+
+function renderComplete() {
+  const ph  = Math.ceil(lvl/5);
+  const acc = phCol(ph);
+  const [ar,ag,ab] = acc.slice(1).match(/.{2}/g).map(h=>parseInt(h,16));
+  const t   = Date.now() * 0.001;
+  const perfect = lives === 4;
+  const stars = (sv.stars||{})[lvl] || 0;
+
+  DUST.draw(); PS.draw();
+
+  // ── Arka plan aurora ──────────────────────────────────
+  const aurora = ctx.createRadialGradient(W/2, H*.3, 0, W/2, H*.3, W*.7);
+  aurora.addColorStop(0,   `rgba(${ar},${ag},${ab},0.12)`);
+  aurora.addColorStop(0.5, `rgba(${ar},${ag},${ab},0.04)`);
+  aurora.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle=aurora; ctx.fillRect(0,0,W,H);
+
+  // ── Üst ince şerit ────────────────────────────────────
+  const stripG = ctx.createLinearGradient(0,0,W,0);
+  stripG.addColorStop(0,  'rgba(0,0,0,0)');
+  stripG.addColorStop(0.5, acc);
+  stripG.addColorStop(1,  'rgba(0,0,0,0)');
+  ctx.save(); ctx.globalAlpha=0.45;
+  ctx.fillStyle=stripG; ctx.fillRect(0, H*.155, W, 2);
+  ctx.restore();
+
+  // ── "BÖLÜM TAMAMLANDI" etiketi ────────────────────────
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`${W*.028}px 'Trebuchet MS', sans-serif`;
+  ctx.fillStyle=`rgba(${ar},${ag},${ab},0.7)`;
+  ctx.fillText('BÖLÜM TAMAMLANDI', W/2, H*.135);
+  ctx.restore();
+
+  // ── Bölüm numarası — büyük, serif ─────────────────────
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`bold ${W*.17}px Georgia, serif`;
+  ctx.fillStyle='#e8eaf6'; ctx.globalAlpha=0.88;
+  ctx.fillText(lvl, W/2, H*.305);
+  // Alt çizgi (sayının altında)
+  ctx.globalAlpha=0.18; ctx.fillStyle=acc;
+  ctx.fillRect(W*.35, H*.315, W*.30, 2);
+  ctx.restore();
+
+  // ── Yıldızlar ─────────────────────────────────────────
+  const starY = H*.42;
+  const starSpacing = W*.175;
+  for (let i=0; i<3; i++) {
+    const sx = W/2 + (i-1)*starSpacing;
+    const earned = i < stars;
+    const animDelay = i * 0.12;
+    const scale = earned ? (1 + 0.04*Math.sin(t*2 + animDelay)) : 1;
+
+    ctx.save(); ctx.translate(sx, starY); ctx.scale(scale, scale);
+    ctx.textAlign='center';
+    ctx.font=`${W*.09}px sans-serif`;
+    ctx.globalAlpha = earned ? 0.92 : 0.13;
+    ctx.fillStyle = earned ? '#ffd740' : '#ffffff';
+    ctx.fillText('★', 0, 0);
+    ctx.restore();
+
+    // Kazanılan yıldızın altında küçük parıltı çizgisi
+    if (earned) {
+      ctx.save(); ctx.globalAlpha = 0.25 + 0.15*Math.sin(t*2+animDelay);
+      const sg = ctx.createLinearGradient(sx-W*.055,0,sx+W*.055,0);
+      sg.addColorStop(0,'rgba(255,215,64,0)');
+      sg.addColorStop(0.5,'rgba(255,215,64,0.8)');
+      sg.addColorStop(1,'rgba(255,215,64,0)');
+      ctx.fillStyle=sg; ctx.fillRect(sx-W*.055, starY+W*.018, W*.11, 1.5);
+      ctx.restore();
+    }
+  }
+
+  // ── Orta kart: can durumu + bonus ─────────────────────
+  const cardY = H*.515, cardH = H*.115;
+  ctx.save();
+  const cg = ctx.createLinearGradient(0,cardY,0,cardY+cardH);
+  cg.addColorStop(0,'rgba(255,255,255,0.055)');
+  cg.addColorStop(1,'rgba(255,255,255,0.015)');
+  ctx.fillStyle=cg;
+  ctx.beginPath(); ctx.roundRect(W*.10, cardY, W*.80, cardH, W*.016); ctx.fill();
+  ctx.strokeStyle=`rgba(${ar},${ag},${ab},0.22)`; ctx.lineWidth=1; ctx.stroke();
+  ctx.restore();
+
+  // Can ikonları kart içinde
+  ctx.save(); ctx.textAlign='center';
+  ctx.font=`${W*.045}px sans-serif`;
+  for (let i=0;i<4;i++) {
+    ctx.fillStyle = i<lives ? '#e53935' : '#1c0a0d';
+    ctx.fillText('♥', W/2+(i-1.5)*W*.058, cardY+cardH*.52);
+  }
+  ctx.restore();
+
+  // Bonus veya mükemmel metni
+  if (perfect && ph > 1) {
+    softText('MÜKEMMEL  ·  +1s hafıza bonusu', W/2, cardY+cardH*.82, W*.028, 'rgba(255,213,79,0.82)');
+  } else if (perfect) {
+    softText('MÜKEMMEL', W/2, cardY+cardH*.82, W*.028, 'rgba(255,213,79,0.82)');
+  } else {
+    softText(`${lives} can ile tamamlandı`, W/2, cardY+cardH*.82, W*.027, 'rgba(160,170,200,0.60)');
+  }
+
+  // ── Alt çizgi + devam butonu ───────────────────────────
+  if (lvl < 25) {
+    if (completeT > 0.5 && Math.floor(Date.now()/620)%2===0)
+      softText('SONRAKİ BÖLÜM İÇİN DOKUN', W/2, H*.855, W*.034, 'rgba(200,210,230,0.52)');
+  } else {
+    // 25. bölüm — özel bitiş
+    ctx.save(); ctx.textAlign='center';
+    ctx.font=`bold ${W*.044}px Georgia, serif`;
+    ctx.fillStyle=acc; ctx.globalAlpha=0.88;
+    ctx.fillText('TÜM BÖLÜMLER TAMAMLANDI', W/2, H*.72);
+    ctx.restore();
+    softText('Efsanevi Kaşif', W/2, H*.79, W*.040, '#e8eaf6');
+    if (completeT>.5&&Math.floor(Date.now()/620)%2===0)
+      softText('DEVAM ETMEK İÇİN DOKUN', W/2, H*.87, W*.034, 'rgba(200,210,230,0.50)');
+  }
+}
+
+function renderPause() {
+  ctx.fillStyle='rgba(2,4,15,0.88)'; ctx.fillRect(0,0,W,H);
+  DUST.draw(); PS.draw();
+
+  const ph = Math.ceil(lvl/5);
+  const acc = phCol(ph);
+
+  softText('DURAKLADI', W/2, H*.19, W*.058, 'rgba(220,225,240,0.85)');
+
+  // Thin accent line
+  ctx.save(); ctx.globalAlpha=0.3;
+  const sg = ctx.createLinearGradient(W*.2,0,W*.8,0);
+  sg.addColorStop(0,'rgba(0,0,0,0)'); sg.addColorStop(0.5,acc); sg.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.strokeStyle=sg; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(W*.2,H*.225); ctx.lineTo(W*.8,H*.225); ctx.stroke();
+  ctx.restore();
+
+  PBTN.forEach((b,i)=>{
+    const bx=W*.12, by=H*(.30+i*.155), bw=W*.76, bh=H*.115;
+    const bg = ctx.createLinearGradient(bx,by,bx,by+bh);
+    bg.addColorStop(0,'rgba(255,255,255,0.065)');
+    bg.addColorStop(1,'rgba(255,255,255,0.025)');
+    ctx.save();
+    ctx.fillStyle=bg;
+    ctx.beginPath(); ctx.roundRect(bx,by,bw,bh,W*.012); ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1; ctx.stroke();
+    ctx.restore();
+    softText(b.lbl, W/2, by+bh*.64, W*.040, 'rgba(210,215,235,0.9)');
+  });
+  softText(`Bölüm ${lvl}  ·  ${lives} can`, W/2, H*.875, W*.030, 'rgba(100,110,150,0.6)');
+}
+
+// ═══════════════════════════════════════════════════════
+//  MASTER RENDER
+// ═══════════════════════════════════════════════════════
+function render() {
+  ctx.save();
+  ctx.translate(SHAKE.x, SHAKE.y);
+  ctx.clearRect(-20,-20,W+40,H+40);
+  // Rich atmospheric background
+  const bgGrad = ctx.createRadialGradient(W/2, H*.4, 0, W/2, H*.5, H*.85);
+  bgGrad.addColorStop(0,   '#0a0d1f');
+  bgGrad.addColorStop(0.5, '#050810');
+  bgGrad.addColorStop(1,   '#020406');
+  ctx.fillStyle = bgGrad; ctx.fillRect(-20,-20,W+40,H+40);
+  // Edge vignette
+  const vgL = ctx.createLinearGradient(0,0,W*.12,0);
+  vgL.addColorStop(0,'rgba(0,0,0,0.55)'); vgL.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=vgL; ctx.fillRect(0,0,W*.12,H);
+  const vgR = ctx.createLinearGradient(W,0,W*.88,0);
+  vgR.addColorStop(0,'rgba(0,0,0,0.55)'); vgR.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=vgR; ctx.fillRect(W*.88,0,W*.12,H);
+
+  if (gs==='MENU')          { renderMenu();     }
+  else if (gs==='TUTORIAL') { renderTutorial(); }
+  else if (gs==='GAMEOVER') { renderGameOver(); }
+  else if (gs==='COMPLETE') { renderComplete(); }
+  else if (gs==='PAUSE')    { renderPause();    }
+  else if (gs==='DYING')    { renderDying();    }
+  else                      { renderGamePlay(); }
+
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════
+let lastTs=0;
+function loop(ts) {
+  const dt=Math.min((ts-lastTs)/1000,.05);
+  lastTs=ts; framedt=dt;
+  update(dt); render();
+  requestAnimationFrame(loop);
+}
+
+// ═══════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════
+lvl=sv.lvl||1; ck=sv.ck||1; pb=sv.pb||0; gs='MENU';
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
