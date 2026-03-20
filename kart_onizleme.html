@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Hidden Path – Kart Önizleme</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0f; display:flex; flex-direction:column;
+         align-items:center; justify-content:center; min-height:100vh; gap:20px;
+         font-family: system-ui, sans-serif; }
+  canvas { border-radius:20px; box-shadow: 0 0 60px rgba(79,195,247,0.15), 0 20px 60px rgba(0,0,0,0.6); }
+  button { padding:12px 36px; background:linear-gradient(135deg,#4fc3f7,#0288d1);
+           color:#fff; border:none; border-radius:12px; font-size:15px;
+           cursor:pointer; font-weight:700; letter-spacing:0.5px;
+           box-shadow: 0 4px 20px rgba(79,195,247,0.3); }
+  button:hover { opacity:0.9; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button onclick="download()">PNG Olarak İndir</button>
+<script>
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+const W = 420, H = 740;
+cvs.width = W; cvs.height = H;
+
+const mockStars   = 68;
+const mockPerfect = 3;
+
+// ── Yardımcı: yumuşak metin gölgesi ──────────────────────────────
+function softShadow(color, blur) {
+  ctx.shadowColor = color; ctx.shadowBlur = blur;
+}
+function noShadow() { ctx.shadowColor='transparent'; ctx.shadowBlur=0; }
+
+// ── Köşe braket çizimi ────────────────────────────────────────────
+function cornerBracket(x, y, dx, dy, size) {
+  ctx.beginPath();
+  ctx.moveTo(x + dx*size, y);
+  ctx.lineTo(x, y);
+  ctx.lineTo(x, y + dy*size);
+  ctx.stroke();
+}
+
+// ── Yol ikonu (path icon) ─────────────────────────────────────────
+function drawPathIcon(cx, cy, scale) {
+  const s = scale;
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  // İz çizgisi — gradient
+  const pathGrad = ctx.createLinearGradient(-s*.5, s*.4, s*.5, -s*.4);
+  pathGrad.addColorStop(0, 'rgba(79,195,247,0.5)');
+  pathGrad.addColorStop(1, '#4fc3f7');
+  ctx.strokeStyle = pathGrad;
+  ctx.lineWidth = s * 0.095;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-s*.45,  s*.38);
+  ctx.lineTo(-s*.45, -s*.08);
+  ctx.lineTo( s*.08, -s*.08);
+  ctx.lineTo( s*.08,  s*.22);
+  ctx.lineTo( s*.45,  s*.22);
+  ctx.lineTo( s*.45, -s*.38);
+  ctx.stroke();
+
+  // Başlangıç noktası
+  ctx.fillStyle = 'rgba(180,210,240,0.6)';
+  ctx.beginPath(); ctx.arc(-s*.45, s*.38, s*.09, 0, Math.PI*2); ctx.fill();
+
+  // Bitiş noktası — parlak
+  const endG = ctx.createRadialGradient(s*.45,-s*.38, 0, s*.45,-s*.38, s*.14);
+  endG.addColorStop(0, '#fff');
+  endG.addColorStop(0.4, '#4fc3f7');
+  endG.addColorStop(1, 'rgba(79,195,247,0)');
+  ctx.fillStyle = endG;
+  ctx.beginPath(); ctx.arc(s*.45, -s*.38, s*.14, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(s*.45, -s*.38, s*.055, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function draw() {
+  // ── 1. Arka plan ─────────────────────────────────────────────────
+  const bg = ctx.createLinearGradient(0, 0, W*.3, H);
+  bg.addColorStop(0,   '#0e1535');
+  bg.addColorStop(0.45,'#080c20');
+  bg.addColorStop(1,   '#030408');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  // İnce diagonal ızgara deseni
+  ctx.save();
+  ctx.globalAlpha = 0.025;
+  ctx.strokeStyle = '#4fc3f7'; ctx.lineWidth = 1;
+  for (let i = -H; i < W+H; i += 28) {
+    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i+H, H); ctx.stroke();
+  }
+  ctx.restore();
+
+  // Üst merkez aurora
+  const aurora = ctx.createRadialGradient(W/2, H*.22, 0, W/2, H*.28, W*.9);
+  aurora.addColorStop(0,   'rgba(79,195,247,0.18)');
+  aurora.addColorStop(0.5, 'rgba(41,121,255,0.06)');
+  aurora.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = aurora; ctx.fillRect(0, 0, W, H);
+
+  // Alt sıcak aurora
+  const auroraB = ctx.createRadialGradient(W/2, H*.8, 0, W/2, H*.85, W*.7);
+  auroraB.addColorStop(0,   'rgba(79,195,247,0.09)');
+  auroraB.addColorStop(1,   'rgba(0,0,0,0)');
+  ctx.fillStyle = auroraB; ctx.fillRect(0, 0, W, H);
+
+  // ── 2. Köşe braketler ─────────────────────────────────────────────
+  ctx.save();
+  ctx.strokeStyle = '#4fc3f7'; ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.35;
+  const bSize = 26, bPad = 22;
+  cornerBracket(bPad, bPad,  1,  1, bSize);
+  cornerBracket(W-bPad, bPad, -1,  1, bSize);
+  cornerBracket(bPad, H-bPad, 1, -1, bSize);
+  cornerBracket(W-bPad, H-bPad, -1, -1, bSize);
+  ctx.restore();
+
+  // ── 3. Yol ikonu ─────────────────────────────────────────────────
+  drawPathIcon(W/2, 98, 34);
+
+  // ── 4. "HIDDEN" letter-spaced ────────────────────────────────────
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.font = '500 13px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(79,195,247,0.65)';
+  ctx.letterSpacing = '6px';
+  'HIDDEN'.split('').forEach((ch, i) => {
+    ctx.fillText(ch, W/2 + (i - 2.5) * 17, 152);
+  });
+  ctx.restore();
+
+  // ── 5. İnce separator ────────────────────────────────────────────
+  ctx.save();
+  const sepG = ctx.createLinearGradient(W*.18, 0, W*.82, 0);
+  sepG.addColorStop(0, 'rgba(0,0,0,0)');
+  sepG.addColorStop(0.5, 'rgba(79,195,247,0.30)');
+  sepG.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.strokeStyle = sepG; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W*.18, 165); ctx.lineTo(W*.82, 165); ctx.stroke();
+  ctx.restore();
+
+  // ── 6. "PATH" büyük başlık ────────────────────────────────────────
+  ctx.save();
+  ctx.textAlign = 'center';
+  // İnce glow
+  softShadow('rgba(79,195,247,0.25)', 24);
+  ctx.font = 'bold 82px Georgia, serif';
+  // Gradient yazı
+  const pathTG = ctx.createLinearGradient(0, 180, 0, 260);
+  pathTG.addColorStop(0, '#ffffff');
+  pathTG.addColorStop(0.6, '#d0e8f8');
+  pathTG.addColorStop(1, 'rgba(160,200,240,0.7)');
+  ctx.fillStyle = pathTG;
+  ctx.fillText('PATH', W/2, 255);
+  noShadow();
+  ctx.restore();
+
+  // ── 7. Rozet dairesi ─────────────────────────────────────────────
+  const bx = W/2, by = H*.465, bR = 72;
+
+  // Dış halka parıltısı
+  ctx.save();
+  const glowG = ctx.createRadialGradient(bx, by, bR*.7, bx, by, bR*1.4);
+  glowG.addColorStop(0, 'rgba(79,195,247,0.12)');
+  glowG.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glowG;
+  ctx.beginPath(); ctx.arc(bx, by, bR*1.4, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // İç daire arka plan
+  ctx.save();
+  const circBg = ctx.createRadialGradient(bx-25, by-28, 0, bx, by, bR);
+  circBg.addColorStop(0, 'rgba(79,195,247,0.22)');
+  circBg.addColorStop(0.6, 'rgba(30,60,120,0.25)');
+  circBg.addColorStop(1, 'rgba(10,20,60,0.35)');
+  ctx.fillStyle = circBg;
+  ctx.beginPath(); ctx.arc(bx, by, bR, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  // Dış halka — gradient çizgi
+  ctx.save();
+  const ringG = ctx.createLinearGradient(bx-bR, by-bR, bx+bR, by+bR);
+  ringG.addColorStop(0, 'rgba(79,195,247,0.9)');
+  ringG.addColorStop(0.4, '#81d4fa');
+  ringG.addColorStop(1, 'rgba(79,195,247,0.5)');
+  ctx.strokeStyle = ringG; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(bx, by, bR, 0, Math.PI*2); ctx.stroke();
+
+  // İkinci ince iç halka
+  ctx.globalAlpha = 0.15;
+  ctx.beginPath(); ctx.arc(bx, by, bR-10, 0, Math.PI*2); ctx.stroke();
+  ctx.restore();
+
+  // Tik işareti — kalın, parlak
+  ctx.save();
+  ctx.translate(bx, by - 8);
+  softShadow('rgba(79,195,247,0.5)', 14);
+  const tickG = ctx.createLinearGradient(-28, -20, 28, 22);
+  tickG.addColorStop(0, '#81d4fa');
+  tickG.addColorStop(1, '#fff');
+  ctx.strokeStyle = tickG; ctx.lineWidth = 6;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-14, 2); ctx.lineTo(-3, 13); ctx.lineTo(16, -11);
+  ctx.stroke();
+  noShadow();
+  ctx.restore();
+
+  // "25 / 25" yazısı
+  ctx.save(); ctx.textAlign = 'center';
+  ctx.font = 'bold 20px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(180,220,255,0.75)';
+  ctx.fillText('25 / 25', bx, by + 48);
+  ctx.restore();
+
+  // ── 8. Başarı başlığı ─────────────────────────────────────────────
+  const titleY = H * .635;
+  ctx.save(); ctx.textAlign = 'center';
+  // Küçük etiket
+  ctx.font = '500 11px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(79,195,247,0.55)';
+  ctx.letterSpacing = '3px';
+  // letter-spacing canvas'ta desteklenmez, elle yaz
+  'TÜM BÖLÜMLER TAMAMLANDI'.split('').reduce((x, ch) => {
+    ctx.fillText(ch, x, titleY - 22);
+    return x + ctx.measureText(ch).width + 2;
+  }, W/2 - ctx.measureText('TÜM BÖLÜMLER TAMAMLANDI').width/2 - 22);
+
+  // Ana unvan
+  softShadow('rgba(255,255,255,0.08)', 12);
+  ctx.font = 'bold 30px Georgia, serif';
+  const titleG = ctx.createLinearGradient(0, titleY, 0, titleY+36);
+  titleG.addColorStop(0, '#ffffff');
+  titleG.addColorStop(1, '#c8dcf0');
+  ctx.fillStyle = titleG;
+  ctx.fillText('Efsanevi Kaşif', W/2, titleY + 8);
+  noShadow();
+  ctx.restore();
+
+  // ── 9. İstatistik kartı ───────────────────────────────────────────
+  const cX = W*.08, cY = H*.725, cW = W*.84, cH = 72, cR = 14;
+  ctx.save();
+
+  // Kart arka plan — glassmorphism
+  const cgBg = ctx.createLinearGradient(0, cY, 0, cY+cH);
+  cgBg.addColorStop(0, 'rgba(255,255,255,0.075)');
+  cgBg.addColorStop(1, 'rgba(255,255,255,0.025)');
+  ctx.fillStyle = cgBg;
+  ctx.beginPath(); ctx.roundRect(cX, cY, cW, cH, cR); ctx.fill();
+
+  // Üst parlak kenar
+  const topLine = ctx.createLinearGradient(cX, 0, cX+cW, 0);
+  topLine.addColorStop(0, 'rgba(255,255,255,0)');
+  topLine.addColorStop(0.3, 'rgba(255,255,255,0.18)');
+  topLine.addColorStop(0.7, 'rgba(79,195,247,0.25)');
+  topLine.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.strokeStyle = topLine; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.roundRect(cX, cY, cW, cH, cR); ctx.stroke();
+  ctx.restore();
+
+  // Sol: Yıldız
+  const colL = W*.26;
+  ctx.save(); ctx.textAlign = 'center';
+  softShadow('#ffd740', 8);
+  ctx.font = '20px sans-serif'; ctx.fillStyle = '#ffd740';
+  ctx.fillText('★', colL, cY + 27);
+  noShadow();
+  ctx.font = 'bold 20px Trebuchet MS, sans-serif';
+  ctx.fillStyle = '#e8eaf6';
+  ctx.fillText(`${mockStars} / 75`, colL, cY + 50);
+  ctx.font = '10px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(140,165,210,0.55)';
+  ctx.fillText('YILDIZ', colL, cY + 64);
+  ctx.restore();
+
+  // Dikey ayraç
+  ctx.save();
+  const divG = ctx.createLinearGradient(0, cY+12, 0, cY+cH-12);
+  divG.addColorStop(0, 'rgba(79,195,247,0)');
+  divG.addColorStop(0.5, 'rgba(79,195,247,0.25)');
+  divG.addColorStop(1, 'rgba(79,195,247,0)');
+  ctx.strokeStyle = divG; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(W*.50, cY+12); ctx.lineTo(W*.50, cY+cH-12); ctx.stroke();
+  ctx.restore();
+
+  // Sağ: Mükemmel
+  const colR = W*.74;
+  ctx.save(); ctx.textAlign = 'center';
+  softShadow('#4fc3f7', 8);
+  ctx.font = '18px sans-serif'; ctx.fillStyle = '#4fc3f7';
+  ctx.fillText('◆', colR, cY + 27);
+  noShadow();
+  ctx.font = 'bold 20px Trebuchet MS, sans-serif';
+  ctx.fillStyle = '#e8eaf6';
+  ctx.fillText(`${mockPerfect} / 25`, colR, cY + 50);
+  ctx.font = '10px Trebuchet MS, sans-serif';
+  ctx.fillStyle = 'rgba(140,165,210,0.55)';
+  ctx.fillText('MÜKEMMEL', colR, cY + 64);
+  ctx.restore();
+
+}
+
+draw();
+
+function download() {
+  const a = document.createElement('a');
+  a.download = 'hiddenpath-tamamlama.png';
+  a.href = cvs.toDataURL('image/png');
+  a.click();
+}
+</script>
+</body>
+</html>
