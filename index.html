@@ -1373,18 +1373,28 @@ function drawPlayer() {
   if (!ptouching&&!movingNow&&!startZoneTouch) return;
   const isInv = invT>0;
   const col = isInv ? `hsl(${Date.now()*.2%360},100%,70%)` : '#00e5ff';
+  // Parmak küreyi kapatmasın — biraz yukarı offset
+  const oy = py - W*.07;
+  // Parmaktan küreye bağlantı çizgisi (ince)
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = W*.002;
+  ctx.setLineDash([W*.004, W*.004]);
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px, oy + W*.025);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
   // Outer glow
-  const g=ctx.createRadialGradient(px,py,0,px,py,W*.075);
-  g.addColorStop(0,isInv?'rgba(255,255,0,0.5)':'rgba(0,229,255,0.5)');
+  const g=ctx.createRadialGradient(px,oy,0,px,oy,W*.065);
+  g.addColorStop(0,isInv?'rgba(255,255,0,0.45)':'rgba(0,229,255,0.40)');
   g.addColorStop(1,'rgba(0,0,0,0)');
   ctx.save(); ctx.fillStyle=g;
-  ctx.beginPath(); ctx.arc(px,py,W*.075,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(px,oy,W*.065,0,Math.PI*2); ctx.fill();
   // Core
-  ctx.fillStyle=col; ctx.shadowBlur=W*.04; ctx.shadowColor=col;
-  ctx.beginPath(); ctx.arc(px,py,W*.022,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=col; ctx.shadowBlur=W*.025; ctx.shadowColor=col;
+  ctx.beginPath(); ctx.arc(px,oy,W*.020,0,Math.PI*2); ctx.fill();
   // Bright center
   ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.shadowBlur=0;
-  ctx.beginPath(); ctx.arc(px,py,W*.008,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(px,oy,W*.007,0,Math.PI*2); ctx.fill();
   ctx.restore();
 }
 
@@ -1886,6 +1896,26 @@ function loop(ts) {
 // ═══════════════════════════════════════════════════════
 lvl=sv.lvl||1; ck=sv.ck||1; pb=sv.pb||0; gs='MENU';
 requestAnimationFrame(loop);
+
+// Uygulama arka plana atıldığında müziği durdur ve oyunu beklet
+let _gsBeforeHide = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // Arka plana gitti — müziği durdur, oyun aktifse duraklat
+    if (audCtx) audCtx.suspend();
+    humStop();
+    if (gs === 'PLAY') {
+      _gsBeforeHide = 'PLAY';
+      gs = 'PAUSE';
+      movingNow = false; ptouching = false;
+    } else {
+      _gsBeforeHide = null;
+    }
+  } else {
+    // Ön plana döndü — müziği devam ettir
+    if (audCtx) audCtx.resume();
+  }
+});
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(()=>{});
